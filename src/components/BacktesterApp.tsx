@@ -1001,40 +1001,6 @@ export function BacktesterApp() {
             <div className="flex-1 min-h-0 flex flex-col xl:flex-row">
               {/* LEFT DOCK (51%): Exact G0.W0..W4 Tabbed Chart Stack */}
               <section className="flex flex-col min-h-[460px] xl:min-h-0 xl:flex-[51] border-b xl:border-b-0 xl:border-r border-[#2A2E39]">
-                {/* ATAS WidgetGroup Tab Strip */}
-                <div className="flex h-7 shrink-0 items-end justify-between border-b border-[#2A2E39] bg-[#131822] px-1 text-[11px]">
-                  <div className="flex items-end gap-0.5 h-full pt-0.5">
-                    {(
-                      [
-                        { id: "h1", label: `${instrTag} H1` },
-                        { id: "m30", label: `${instrTag} M30` },
-                        { id: "m5", label: `${instrTag} M5` },
-                        { id: "m1", label: `${instrTag} M1` },
-                        { id: "m5_cluster", label: `${instrTag} M5 Cluster` },
-                      ] as const
-                    ).map((tab) => (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => setLeftTab(tab.id)}
-                        className={`h-full px-2.5 rounded-t-xs font-medium transition border-t-2 ${
-                          leftTab === tab.id
-                            ? "border-[#3BEFF0] bg-[#1F293B] text-white"
-                            : "border-transparent text-[#ABAEB8] hover:bg-[#1A2333] hover:text-white"
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="hidden sm:flex items-center gap-1 pr-1.5 pb-1 text-[10px] font-mono-num text-[#ABAEB8]">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#089981]" />
-                    <span>
-                      {dataset.capabilities.hasRealAggressorTape ? "Real Tape" : "OHLCV Only"}
-                    </span>
-                  </div>
-                </div>
-
                 {/* Active Left Chart + ATAS CumulativeDelta Candles Sub-Panel on M5 & M1 */}
                 <div className="flex-1 min-h-0 flex flex-col">
                   {leftTab === "h1" && (
@@ -1176,28 +1142,26 @@ export function BacktesterApp() {
                     />
                   )}
                 </div>
-              </section>
 
-              {/* RIGHT DOCK (49%): Exact G1.W0..W2 Tabbed Stack (M5 Clusters | M5 Delta | Heatmap | SmartDOM | Tape) */}
-              <section className="flex flex-col min-h-[460px] xl:min-h-0 xl:flex-[49]">
-                <div className="flex h-7 shrink-0 items-end justify-between border-b border-[#2A2E39] bg-[#131822] px-1 text-[11px]">
-                  <div className="flex items-end gap-0.5 h-full pt-0.5">
+                {/* ATAS WidgetGroup Bottom Tab Strip (Timeframes) */}
+                <div className="flex h-7 shrink-0 items-start justify-between border-t border-[#2A2E39] bg-[#131822] px-1 text-[11px]">
+                  <div className="flex items-start gap-0.5 h-full pb-0.5">
                     {(
                       [
-                        { id: "clusters", label: "M5 Footprint" },
-                        { id: "delta", label: "M5 Delta" },
-                        { id: "heatmap", label: "Heatmap" },
-                        { id: "smartdom", label: "SmartDOM" },
-                        { id: "tape", label: "Tape" },
+                        { id: "h1", label: `${instrTag} H1` },
+                        { id: "m30", label: `${instrTag} M30` },
+                        { id: "m5", label: `${instrTag} M5` },
+                        { id: "m1", label: `${instrTag} M1` },
+                        { id: "m5_cluster", label: `${instrTag} M5 Cluster` },
                       ] as const
                     ).map((tab) => (
                       <button
                         key={tab.id}
                         type="button"
-                        onClick={() => setRightTab(tab.id)}
-                        className={`h-full px-2.5 rounded-t-xs font-medium transition border-t-2 ${
-                          rightTab === tab.id
-                            ? "border-[#FF4900] bg-[#1F293B] text-white"
+                        onClick={() => setLeftTab(tab.id)}
+                        className={`h-full px-2.5 rounded-b-xs font-medium transition border-b-2 ${
+                          leftTab === tab.id
+                            ? "border-[#3BEFF0] bg-[#1F293B] text-white"
                             : "border-transparent text-[#ABAEB8] hover:bg-[#1A2333] hover:text-white"
                         }`}
                       >
@@ -1205,11 +1169,17 @@ export function BacktesterApp() {
                       </button>
                     ))}
                   </div>
-                  <span className="hidden sm:inline pr-2 pb-1 font-mono-num text-[10.5px] text-[#F1F1F1]">
-                    ${currentPrice.toFixed(2)}
-                  </span>
+                  <div className="hidden sm:flex items-center gap-1 pr-1.5 self-center text-[10px] font-mono-num text-[#ABAEB8]">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#089981]" />
+                    <span>
+                      {dataset.capabilities.hasRealAggressorTape ? "Real Tape" : "OHLCV Only"}
+                    </span>
+                  </div>
                 </div>
+              </section>
 
+              {/* RIGHT DOCK (49%): Exact G1.W0..W2 Tabbed Stack (M5 Clusters | M5 Delta | Heatmap | SmartDOM | Tape) */}
+              <section className="flex flex-col min-h-[460px] xl:min-h-0 xl:flex-[49]">
                 <div className="flex-1 min-h-0">
                   {rightTab === "clusters" && (
                     <FootprintChart
@@ -1281,6 +1251,37 @@ export function BacktesterApp() {
                       onChangeCustomWhale={setCustomBigWhale}
                     />
                   )}
+                </div>
+
+                {/* ATAS WidgetGroup Bottom Tab Strip (Orderflow Charts) */}
+                <div className="flex h-7 shrink-0 items-start justify-between border-t border-[#2A2E39] bg-[#131822] px-1 text-[11px]">
+                  <div className="flex items-start gap-0.5 h-full pb-0.5">
+                    {(
+                      [
+                        { id: "clusters", label: "M5 Footprint" },
+                        { id: "delta", label: "M5 Delta" },
+                        { id: "heatmap", label: "Heatmap" },
+                        { id: "smartdom", label: "SmartDOM" },
+                        { id: "tape", label: "Tape" },
+                      ] as const
+                    ).map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setRightTab(tab.id)}
+                        className={`h-full px-2.5 rounded-b-xs font-medium transition border-b-2 ${
+                          rightTab === tab.id
+                            ? "border-[#FF4900] bg-[#1F293B] text-white"
+                            : "border-transparent text-[#ABAEB8] hover:bg-[#1A2333] hover:text-white"
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="hidden sm:inline pr-2 self-center font-mono-num text-[10.5px] text-[#F1F1F1]">
+                    ${currentPrice.toFixed(2)}
+                  </span>
                 </div>
               </section>
 
