@@ -1,24 +1,20 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
-  BookOpen,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ClipboardList,
   Crosshair,
-  Database,
   Eye,
   EyeOff,
   FastForward,
   Flame,
-  Layers,
-  LayoutGrid,
   Pause,
   Play,
   RefreshCw,
   SkipForward,
+  SlidersHorizontal,
   Upload,
 } from "lucide-react";
 import {
@@ -91,15 +87,16 @@ export function BacktesterApp() {
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Replay clock (strictly hides all future candles/ticks/profiles > replayTs)
   const [replayTs, setReplayTs] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playSpeedMs, setPlaySpeedMs] = useState<number>(700);
 
-  // Chart tools & toggles
+  // Clean workspace menu & chart state
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState<boolean>(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [replayLayout, setReplayLayout] = useState<ReplayLayout>("standard");
-  const [showHeatmap, setShowHeatmap] = useState<boolean>(false); // OFF by default
-  const [showTape, setShowTape] = useState<boolean>(true);
+  const [showHeatmap, setShowHeatmap] = useState<boolean>(false);
+  const [showTape, setShowTape] = useState<boolean>(false); // Clean 4-pane by default; toggle in Workspace menu
   const [drillMode, setDrillMode] = useState<boolean>(false);
   const [blindDate, setBlindDate] = useState<boolean>(false);
   const [footprintMode, setFootprintMode] = useState<"bid_ask" | "delta">(
@@ -125,7 +122,6 @@ export function BacktesterApp() {
   const [hoverTs, setHoverTs] = useState<number | null>(null);
   const [csvModalOpen, setCsvModalOpen] = useState<boolean>(false);
 
-  // Plan, Positions, Working Pending Orders, Drills, Account & Sim Rep Journal
   const [plan, setPlan] = useState<PremarketPlan>(() => DEFAULT_PLAN(""));
   const [accountBalance, setAccountBalance] = useState<number>(300);
   const [positions, setPositions] = useState<SimPosition[]>([]);
@@ -138,9 +134,20 @@ export function BacktesterApp() {
     setReps(loadJournalReps());
   }, []);
 
+  // Close workspace popover on outside click
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setWorkspaceMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
   const flashToast = useCallback((msg: string) => {
     setToastMsg(msg);
-    setTimeout(() => setToastMsg((cur) => (cur === msg ? null : cur)), 4200);
+    setTimeout(() => setToastMsg((cur) => (cur === msg ? null : cur)), 3800);
   }, []);
 
   const applyDataset = useCallback((ds: SessionDataset) => {
@@ -156,7 +163,6 @@ export function BacktesterApp() {
     setPinnedZoneIds(new Set());
     setIsPlaying(false);
 
-    // Position replay at ~45 min into Tokyo open so footprints/CVD have clean initial context
     const targetStart = ds.asiaOpenTs + 45 * 60_000;
     const m5 = ds.m5Candles;
     if (m5.length > 0) {
@@ -194,12 +200,10 @@ export function BacktesterApp() {
     [applyDataset]
   );
 
-  // Initial load: real Kraken PAXG/USD weekday Asia session tape
   useEffect(() => {
     fetchFeed("paxg");
   }, [fetchFeed]);
 
-  // Persist Premarket Plan & Custom Zones automatically
   const updatePlan = useCallback((next: PremarketPlan) => {
     setPlan(next);
     savePlanForSession(next);
@@ -218,7 +222,7 @@ export function BacktesterApp() {
     [dataset?.sessionDate]
   );
 
-  // Strict NO-LOOKAHEAD filtered views up to replayTs
+  // Strict NO-LOOKAHEAD views up to replayTs
   const visibleH1 = useMemo(
     () => (dataset ? dataset.h1Candles.filter((c) => c.ts <= replayTs) : []),
     [dataset, replayTs]
@@ -260,7 +264,6 @@ export function BacktesterApp() {
     return lastM5?.close ?? visibleH1[visibleH1.length - 1]?.close ?? 0;
   }, [visibleM1, visibleM5, visibleH1]);
 
-  // Profiles strictly up to replayTs
   const profiles = useMemo(() => {
     if (!dataset) {
       return {
@@ -304,7 +307,6 @@ export function BacktesterApp() {
     [allZones, activeZoneId]
   );
 
-  // Real Footprint & Big Trades strictly from visible real ticks
   const footprintSuite = useMemo(() => {
     if (!dataset?.capabilities.hasRealAggressorTape) {
       return {
@@ -326,7 +328,6 @@ export function BacktesterApp() {
   const vwapM5 = useMemo(() => computeSessionVwap(visibleM5), [visibleM5]);
   const vwapM1 = useMemo(() => computeSessionVwap(visibleM1), [visibleM1]);
 
-  // Journal persistence
   const persistRep = useCallback(
     (rep: SimRepLog) => {
       setReps((prev) => {
@@ -335,7 +336,7 @@ export function BacktesterApp() {
         return next;
       });
       flashToast(
-        `Logged rep (${rep.model === "no_trade" ? "No Trade" : `${rep.outcomeR >= 0 ? "+" : ""}${rep.outcomeR}R`})`
+        `Logged rep (${rep.model === "no_trade" ? "Skip" : `${rep.outcomeR >= 0 ? "+" : ""}${rep.outcomeR}R`})`
       );
     },
     [flashToast]
@@ -411,7 +412,7 @@ export function BacktesterApp() {
     [dataset, persistRep, replayTs, visibleM1.length]
   );
 
-  // Evaluate Working Pending Orders (Section 8: trigger fill / slippage / invalidation auto-cancel)
+  // Pending Order evaluation on each bar step
   useEffect(() => {
     if (pendingOrders.length === 0 || visibleM5.length === 0) return;
     const latestBar = visibleM5[visibleM5.length - 1];
@@ -461,7 +462,7 @@ export function BacktesterApp() {
     }
   }, [replayTs, pendingOrders, positions, visibleM5, flashToast]);
 
-  // Evaluate Open Position Stop / T1 / T2 hits
+  // Open Position Stop / T1 / T2 hits
   useEffect(() => {
     const openPos = positions.find((p) => p.status === "open");
     if (!openPos || visibleM5.length === 0) return;
@@ -483,9 +484,7 @@ export function BacktesterApp() {
         setPositions((prev) =>
           prev.map((p) => (p.id === openPos.id ? { ...p, t1Hit: true } : p))
         );
-        flashToast(
-          `T1 (${openPos.t1PriceExec.toFixed(2)}) reached! Consider moving stop to BE.`
-        );
+        flashToast(`T1 (${openPos.t1PriceExec.toFixed(2)}) hit — consider BE.`);
       }
     } else {
       if (latestBar.high >= openPos.stopPriceExec) {
@@ -502,14 +501,12 @@ export function BacktesterApp() {
         setPositions((prev) =>
           prev.map((p) => (p.id === openPos.id ? { ...p, t1Hit: true } : p))
         );
-        flashToast(
-          `T1 (${openPos.t1PriceExec.toFixed(2)}) reached! Consider moving stop to BE.`
-        );
+        flashToast(`T1 (${openPos.t1PriceExec.toFixed(2)}) hit — consider BE.`);
       }
     }
   }, [replayTs, positions, visibleM5, closePosition, flashToast]);
 
-  // Auto-grade ungraded Blind Drill calls once +6 M5 bars elapse
+  // Auto-grade Blind Drill calls
   useEffect(() => {
     const hasUngraded = drillCalls.some((c) => !c.graded);
     if (!hasUngraded || visibleM5.length === 0) return;
@@ -529,14 +526,13 @@ export function BacktesterApp() {
       if (newest?.graded) {
         flashToast(
           newest.graded.correct
-            ? `Drill Correct: ${newest.graded.actualStatus.toUpperCase()} at ${newest.zoneLabel}`
+            ? `Drill Correct: ${newest.graded.actualStatus.toUpperCase()}`
             : `Drill Mismatch: tape showed ${newest.graded.actualStatus.toUpperCase()}`
         );
       }
     }
   }, [replayTs, drillCalls, visibleM5, flashToast]);
 
-  // Replay stepping
   const stepM5 = useCallback(
     (deltaBars: number) => {
       if (!dataset || dataset.m5Candles.length === 0) return;
@@ -583,11 +579,11 @@ export function BacktesterApp() {
       if (hitZone) {
         setActiveZoneId(hitZone.id);
         flashToast(
-          `Level touch at ${hitZone.label} (${formatPTTime(nextBar.ts)} PT)`
+          `Touch: ${hitZone.label.replace("STACKED: ", "★ ")} (${formatPTTime(nextBar.ts)} PT)`
         );
       }
     } else {
-      flashToast("No further level touches in this Asia session.");
+      flashToast("No further zone touches in this session.");
     }
   }, [dataset, allZones, replayTs, flashToast]);
 
@@ -597,7 +593,6 @@ export function BacktesterApp() {
     return () => clearInterval(id);
   }, [isPlaying, playSpeedMs, stepM5]);
 
-  // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -617,6 +612,7 @@ export function BacktesterApp() {
       } else if (e.key === "Escape") {
         setPickPriceMode(null);
         setDrawZoneMode(false);
+        setWorkspaceMenuOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -657,84 +653,115 @@ export function BacktesterApp() {
     updateCustomZones((prev) => [...prev, newZone]);
     setActiveZoneId(newZone.id);
     setDrawZoneMode(false);
-    flashToast(`Saved custom zone ${low.toFixed(2)} - ${high.toFixed(2)}`);
+    flashToast(`Marked zone ${low.toFixed(2)} - ${high.toFixed(2)}`);
   };
 
   const handleChartPricePick = (price: number) => {
     if (!pickPriceMode) return;
     setPickedPrices((prev) => ({ ...prev, [pickPriceMode]: price }));
-    flashToast(`Set ${pickPriceMode.toUpperCase()} to ${price.toFixed(2)} from chart`);
+    flashToast(`Set ${pickPriceMode.toUpperCase()} to ${price.toFixed(2)}`);
     setPickPriceMode(null);
   };
 
   const latestFootprint =
     footprintSuite.bars[footprintSuite.bars.length - 1] ?? null;
 
+  const isWorkstationView = activeTab === "replay" || activeTab === "premarket";
+
   return (
-    <div className="flex min-h-screen flex-col bg-[#07090e] text-slate-100">
-      {/* Top Bar */}
-      <header className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-2 border-b border-[#1c2436] bg-[#0a0e17]/95 px-3 py-2 backdrop-blur-xs">
-        <div className="flex items-center gap-3">
+    <div
+      className={`flex flex-col bg-[#0b0d11] text-[#e6e9ef] ${
+        isWorkstationView ? "xl:h-screen xl:overflow-hidden min-h-screen" : "min-h-screen"
+      }`}
+    >
+      {/* Single Clean 44px Institutional Top Bar */}
+      <header className="sticky top-0 z-40 flex h-11 shrink-0 items-center justify-between gap-3 border-b border-[#1c212b] bg-[#0f1217] px-3">
+        <div className="flex items-center gap-5 h-full">
+          {/* Minimal Wordmark */}
           <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-500/15 border border-amber-500/40 font-mono-num text-xs font-bold text-amber-300">
-              GX
-            </div>
-            <div>
-              <div className="text-xs font-bold tracking-wider text-slate-100">
-                GEX ASIA TERMINAL
-              </div>
-              <div className="text-[10px] text-slate-400">
-                Asia Value Model · GC Read / 1OZ Exec
-              </div>
-            </div>
+            <span className="h-2 w-2 rounded-full bg-[#d4a03a]" />
+            <span className="text-xs font-semibold tracking-wider text-[#e6e9ef]">
+              GEX
+            </span>
           </div>
 
-          <nav className="ml-2 flex items-center gap-1 rounded-lg border border-[#1c2436] bg-[#070a11] p-0.5 text-xs">
+          {/* Borderless Underline Navigation */}
+          <nav className="flex items-center gap-1 h-full text-xs">
             {(
               [
-                { id: "premarket", label: "1. Premarket (H1/M30)", icon: Layers },
-                { id: "replay", label: "2. Asia Replay", icon: Activity },
+                { id: "premarket", label: "Premarket" },
+                { id: "replay", label: "Replay" },
                 {
                   id: "journal",
-                  label: `3. Sim Journal (${reps.filter((r) => !r.isSample).length})`,
-                  icon: ClipboardList,
+                  label: `Journal (${reps.filter((r) => !r.isSample).length})`,
                 },
-                { id: "playbook", label: "Playbook", icon: BookOpen },
+                { id: "playbook", label: "Playbook" },
               ] as const
-            ).map(({ id, label, icon: Icon }) => (
+            ).map((t) => (
               <button
-                key={id}
+                key={t.id}
                 type="button"
-                onClick={() => setActiveTab(id)}
-                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition ${
-                  activeTab === id
-                    ? "bg-[#172136] text-sky-300 shadow-xs"
-                    : "text-slate-400 hover:text-slate-200"
+                onClick={() => setActiveTab(t.id)}
+                className={`h-full px-2.5 text-[12px] font-medium transition border-b-2 ${
+                  activeTab === t.id
+                    ? "border-[#e6e9ef] text-[#e6e9ef]"
+                    : "border-transparent text-[#7d8594] hover:text-[#c8cfdc]"
                 }`}
               >
-                <Icon className="h-3.5 w-3.5" />
-                {label}
+                {t.label}
               </button>
             ))}
           </nav>
+
+          {/* Compact Live Ticker Readout */}
+          {dataset && (
+            <div
+              className="hidden lg:flex items-center gap-2.5 border-l border-[#1c212b] pl-4 font-mono-num text-[11px]"
+              title={dataset.capabilities.caveat ?? dataset.capabilities.sourceLabel}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  dataset.capabilities.hasRealAggressorTape
+                    ? "bg-[#00c087]"
+                    : "bg-[#d4a03a]"
+                }`}
+              />
+              <span className="text-[#8b94a5]">
+                {dataset.capabilities.hasRealAggressorTape ? "REAL TAPE" : "OHLCV ONLY"}
+              </span>
+              <span className="font-semibold text-[#e6e9ef]">
+                ${currentPrice.toFixed(2)}
+              </span>
+              <span className="text-[#6e7787]">
+                {blindDate
+                  ? `${formatPTTime(replayTs)} PT`
+                  : `${formatPTTime(replayTs, true)} PT`}
+              </span>
+            </div>
+          )}
+          {loading && (
+            <span className="flex items-center gap-1.5 text-[11px] text-[#8b94a5]">
+              <RefreshCw className="h-3 w-3 animate-spin" /> Loading
+            </span>
+          )}
         </div>
 
-        {/* Right Controls */}
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
-          <div className="flex items-center rounded-md border border-[#1c2436] bg-[#070a11] p-0.5 text-[11px]">
+        {/* Right Controls: Clean Feed Switcher + Session Picker + Single Tools Popover */}
+        <div className="flex items-center gap-2 text-xs">
+          <div className="flex items-center rounded bg-[#151922] p-0.5 text-[11px]">
             <button
               type="button"
               onClick={() => {
                 setFeedPreset("paxg");
                 fetchFeed("paxg");
               }}
-              className={`rounded px-2 py-1 font-medium transition ${
+              className={`rounded-xs px-2 py-0.5 font-medium transition ${
                 feedPreset === "paxg" && dataset?.dataSource === "paxg_ticks"
-                  ? "bg-emerald-600/25 text-emerald-300"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-[#252c3a] text-[#e6e9ef]"
+                  : "text-[#7d8594] hover:text-[#c8cfdc]"
               }`}
             >
-              PAXG Real Tape
+              PAXG Tape
             </button>
             <button
               type="button"
@@ -742,10 +769,10 @@ export function BacktesterApp() {
                 setFeedPreset("gc");
                 fetchFeed("gc");
               }}
-              className={`rounded px-2 py-1 font-medium transition ${
+              className={`rounded-xs px-2 py-0.5 font-medium transition ${
                 feedPreset === "gc" && dataset?.dataSource === "gc_ohlcv"
-                  ? "bg-amber-600/25 text-amber-300"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-[#252c3a] text-[#e6e9ef]"
+                  : "text-[#7d8594] hover:text-[#c8cfdc]"
               }`}
             >
               COMEX GC=F
@@ -759,226 +786,243 @@ export function BacktesterApp() {
                 setSelectedSessionDate(e.target.value);
                 fetchFeed(feedPreset, e.target.value);
               }}
-              className="rounded border border-[#26324a] bg-[#0c121e] px-2 py-1 font-mono-num text-[11px] text-slate-200"
-              title="Select past Asia session date (PT)"
+              className="rounded border border-[#222836] bg-[#151922] px-2 py-1 font-mono-num text-[11px] text-[#e6e9ef] focus:outline-none"
             >
               {availableSessions.map((d, idx) => (
                 <option key={d} value={d}>
-                  {blindDate ? `Blind Session #${idx + 1}` : `Asia ${d}`}
+                  {blindDate ? `Blind Session #${idx + 1}` : d}
                 </option>
               ))}
             </select>
           )}
 
-          <button
-            type="button"
-            onClick={() => setBlindDate((b) => !b)}
-            className={`flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium transition ${
-              blindDate
-                ? "border-violet-500/50 bg-violet-500/15 text-violet-200"
-                : "border-[#1c2436] bg-[#0c111b] text-slate-400 hover:text-slate-200"
-            }`}
-            title="Hide exact session date for blind practice"
-          >
-            {blindDate ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-            Blind
-          </button>
+          {/* Clean Workspace Popover (replaces 10 noisy topbar buttons) */}
+          <div className="relative" ref={menuRef}>
+            <button
+              type="button"
+              onClick={() => setWorkspaceMenuOpen((o) => !o)}
+              className={`flex items-center gap-1.5 rounded border px-2.5 py-1 text-[11px] font-medium transition ${
+                workspaceMenuOpen
+                  ? "border-[#384257] bg-[#1d2330] text-[#e6e9ef]"
+                  : "border-[#222836] bg-[#151922] text-[#c8cfdc] hover:bg-[#1b212e]"
+              }`}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              Workspace
+              <ChevronDown className="h-3 w-3 text-[#7d8594]" />
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setDrillMode((d) => !d)}
-            className={`flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium transition ${
-              drillMode
-                ? "border-amber-500/60 bg-amber-500/20 text-amber-200"
-                : "border-[#1c2436] bg-[#0c111b] text-slate-400 hover:text-slate-200"
-            }`}
-            title="Blind Level-Touch Drill Mode (commit Model 1/Model 2/No-Trade before revealing +30m)"
-          >
-            <Crosshair className="h-3.5 w-3.5" />
-            Drill {drillMode ? "ON" : "OFF"}
-          </button>
+            {workspaceMenuOpen && (
+              <div className="absolute right-0 mt-1.5 w-64 rounded-md border border-[#262d3b] bg-[#12161f] p-3 shadow-2xl space-y-3 text-[11px] z-50">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-[#6e7787] mb-1.5">
+                    Chart Layout
+                  </div>
+                  <div className="grid grid-cols-1 gap-1">
+                    {(
+                      [
+                        { id: "standard", label: "Standard (M5 · FP · M1 · CVD)" },
+                        { id: "dual_fp", label: "Dual Footprint (Bid×Ask + Delta)" },
+                        { id: "tape_focus", label: "Full-Width Footprint Study" },
+                      ] as const
+                    ).map((l) => (
+                      <button
+                        key={l.id}
+                        type="button"
+                        onClick={() => setReplayLayout(l.id)}
+                        className={`rounded px-2 py-1 text-left transition ${
+                          replayLayout === l.id
+                            ? "bg-[#252c3a] text-[#e6e9ef] font-medium"
+                            : "text-[#8b94a5] hover:bg-[#191f2b]"
+                        }`}
+                      >
+                        {l.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-          <button
-            type="button"
-            onClick={() => setCsvModalOpen(true)}
-            className="flex items-center gap-1 rounded border border-[#26324a] bg-[#101829] px-2 py-1 text-[11px] font-medium text-slate-200 hover:bg-[#19253d]"
-          >
-            <Upload className="h-3.5 w-3.5 text-sky-400" />
-            CSV
-          </button>
+                <div className="border-t border-[#1e2432] pt-2.5">
+                  <div className="text-[10px] uppercase tracking-wider text-[#6e7787] mb-1.5">
+                    Footprint Row Step
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 font-mono-num">
+                    {[0.25, 0.5, 1.0, 2.0].map((st) => (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => setFpStep(st)}
+                        className={`rounded py-1 text-[10px] ${
+                          fpStep === st
+                            ? "bg-[#252c3a] text-[#e6e9ef] font-semibold"
+                            : "bg-[#171c26] text-[#7d8594]"
+                        }`}
+                      >
+                        ${st.toFixed(2)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-          <button
-            type="button"
-            onClick={() => setShowHeatmap((v) => !v)}
-            className={`flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium transition ${
-              showHeatmap
-                ? "border-orange-500/50 bg-orange-500/15 text-orange-300"
-                : "border-[#1c2436] bg-[#0c111b] text-slate-400 hover:text-slate-200"
-            }`}
-            title="Optional L2 Heatmap panel (off by default)"
-          >
-            <Flame className="h-3.5 w-3.5" />
-            Heatmap {showHeatmap ? "ON" : "OFF"}
-          </button>
+                <div className="border-t border-[#1e2432] pt-2.5 space-y-1">
+                  <div className="text-[10px] uppercase tracking-wider text-[#6e7787] mb-1">
+                    Panels &amp; Practice Modes
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDrillMode((v) => !v)}
+                    className="flex w-full items-center justify-between rounded px-2 py-1 hover:bg-[#191f2b]"
+                  >
+                    <span className="flex items-center gap-1.5 text-[#c8cfdc]">
+                      <Crosshair className="h-3.5 w-3.5 text-[#d4a03a]" /> Blind Drill Mode
+                    </span>
+                    <span className={drillMode ? "text-[#00c087] font-semibold" : "text-[#586070]"}>
+                      {drillMode ? "ON" : "OFF"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBlindDate((v) => !v)}
+                    className="flex w-full items-center justify-between rounded px-2 py-1 hover:bg-[#191f2b]"
+                  >
+                    <span className="flex items-center gap-1.5 text-[#c8cfdc]">
+                      {blindDate ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />} Hide Session Date
+                    </span>
+                    <span className={blindDate ? "text-[#00c087] font-semibold" : "text-[#586070]"}>
+                      {blindDate ? "ON" : "OFF"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowTape((v) => !v)}
+                    className="flex w-full items-center justify-between rounded px-2 py-1 hover:bg-[#191f2b]"
+                  >
+                    <span className="text-[#c8cfdc]">Time &amp; Sales Tape</span>
+                    <span className={showTape ? "text-[#00c087] font-semibold" : "text-[#586070]"}>
+                      {showTape ? "ON" : "OFF"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowHeatmap((v) => !v)}
+                    className="flex w-full items-center justify-between rounded px-2 py-1 hover:bg-[#191f2b]"
+                  >
+                    <span className="flex items-center gap-1.5 text-[#c8cfdc]">
+                      <Flame className="h-3.5 w-3.5 text-[#d4a03a]" /> L2 Heatmap (Optional)
+                    </span>
+                    <span className={showHeatmap ? "text-[#00c087] font-semibold" : "text-[#586070]"}>
+                      {showHeatmap ? "ON" : "OFF"}
+                    </span>
+                  </button>
+                </div>
+
+                <div className="border-t border-[#1e2432] pt-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWorkspaceMenuOpen(false);
+                      setCsvModalOpen(true);
+                    }}
+                    className="flex w-full items-center justify-center gap-1.5 rounded bg-[#e6e9ef] py-1.5 font-semibold text-[#0b0d11] hover:bg-white"
+                  >
+                    <Upload className="h-3.5 w-3.5" /> Import Databento / CSV
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* Data Provenance Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#141c2c] bg-[#090d15] px-3 py-1 text-[11px]">
-        <div className="flex flex-wrap items-center gap-2">
-          <Database className="h-3.5 w-3.5 text-slate-500" />
-          {loading ? (
-            <span className="flex items-center gap-1.5 text-sky-300">
-              <RefreshCw className="h-3 w-3 animate-spin" /> Loading real historical gold session...
-            </span>
-          ) : dataset ? (
-            <>
-              <span className="font-medium text-slate-200">
-                {dataset.capabilities.sourceLabel}
-              </span>
-              <span
-                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                  dataset.capabilities.hasRealAggressorTape
-                    ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
-                    : "bg-amber-500/15 text-amber-300 border border-amber-500/30"
-                }`}
-              >
-                {dataset.capabilities.hasRealAggressorTape
-                  ? "REAL BID/ASK TAPE"
-                  : "OHLCV ONLY"}
-              </span>
-              {dataset.capabilities.hasRealL2Depth && (
-                <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300 border border-sky-500/30">
-                  REAL L2 BOOK
-                </span>
-              )}
-            </>
-          ) : (
-            <span className="text-rose-400">{loadError ?? "No dataset loaded"}</span>
-          )}
-        </div>
-        {dataset && (
-          <div className="flex items-center gap-3 font-mono-num text-slate-300">
-            <span>
-              Replay Clock:{" "}
-              <strong className="text-sky-300">
-                {blindDate
-                  ? `${formatPTTime(replayTs)} PT`
-                  : `${formatPTTime(replayTs, true)} PT`}
-              </strong>
-            </span>
-            <span>
-              Last:{" "}
-              <strong className="text-amber-300">
-                ${currentPrice.toFixed(2)}
-              </strong>
-            </span>
-          </div>
-        )}
-      </div>
-
-      {/* Toast */}
+      {/* Subtle Toast */}
       {toastMsg && (
-        <div className="fixed bottom-16 right-4 z-50 rounded-lg border border-sky-500/50 bg-[#0e1729] px-3.5 py-2 text-xs font-medium text-sky-200 shadow-xl">
+        <div className="fixed bottom-12 right-4 z-50 rounded border border-[#2c3446] bg-[#151a24] px-3 py-1.5 text-[11px] font-medium text-[#e6e9ef] shadow-2xl">
           {toastMsg}
         </div>
       )}
 
       {/* Main Content */}
-      <main className="flex-1">
+      <main className="flex-1 min-h-0 flex flex-col">
         {loadError && !dataset && (
-          <div className="mx-auto mt-10 max-w-lg rounded-lg border border-rose-500/40 bg-rose-500/10 p-5 text-center text-xs">
-            <div className="font-semibold text-rose-300">
-              Could not fetch market feed
-            </div>
-            <p className="mt-1 text-slate-300">{loadError}</p>
+          <div className="m-auto max-w-md rounded-md border border-[#2a2024] bg-[#141013] p-5 text-center text-xs">
+            <div className="font-semibold text-[#f6465d]">Feed load failed</div>
+            <p className="mt-1 text-[#8b94a5]">{loadError}</p>
             <div className="mt-3 flex justify-center gap-2">
               <button
                 type="button"
                 onClick={() => fetchFeed(feedPreset)}
-                className="rounded bg-sky-600 px-3 py-1.5 text-white hover:bg-sky-500"
+                className="rounded bg-[#e6e9ef] px-3 py-1.5 font-medium text-[#0b0d11]"
               >
-                Retry Live Fetch
+                Retry
               </button>
               <button
                 type="button"
                 onClick={() => setCsvModalOpen(true)}
-                className="rounded border border-slate-600 px-3 py-1.5 text-slate-200"
+                className="rounded border border-[#2a3140] px-3 py-1.5 text-[#c8cfdc]"
               >
-                Upload CSV File
+                Import CSV
               </button>
             </div>
           </div>
         )}
 
+        {/* 1. PREMARKET WORKSPACE */}
         {dataset && activeTab === "premarket" && (
-          <div className="grid grid-cols-1 gap-3 p-3 pb-20 xl:grid-cols-12">
-            <div className="space-y-3 xl:col-span-8">
-              <div className="flex items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-slate-400">Right Profile Overlay:</span>
-                  {(
-                    [
-                      { id: "pd", label: "Prev Day (PD)" },
-                      { id: "pw", label: "Prev Week (PW)" },
-                      { id: "composite", label: "5D Composite" },
-                      { id: "developing", label: "Developing" },
-                    ] as const
-                  ).map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => setProfileDisplayMode(m.id)}
-                      className={`rounded px-2 py-1 text-[11px] border ${
-                        profileDisplayMode === m.id
-                          ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
-                          : "bg-[#0c1018] border-[#1c2436] text-slate-400"
-                      }`}
-                    >
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
-                <span className="text-[11px] text-slate-500">
-                  Press <kbd className="rounded bg-slate-800 px-1 text-slate-300">Z</kbd> to draw custom zone
-                </span>
+          <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[1fr_340px]">
+            <div className="flex flex-col min-h-0 divide-y divide-[#1c212b] border-r border-[#1c212b]">
+              <div className="flex-1 min-h-[280px]">
+                <CandleProfileChart
+                  title="H1 Bias & Multi-Day Profile"
+                  subtitle={dataset.instrument}
+                  candles={visibleH1}
+                  profiles={profiles}
+                  activeProfileMode={profileDisplayMode}
+                  nakedPocs={profiles.nakedPocs}
+                  zones={allZones}
+                  activeZoneId={activeZoneId}
+                  onSelectZone={setActiveZoneId}
+                  drawZoneMode={drawZoneMode}
+                  onDrawZoneComplete={handleDrawZoneComplete}
+                  defaultVisibleBars={96}
+                  headerRight={
+                    <div className="flex items-center gap-1 text-[10px]">
+                      {(["pd", "pw", "composite", "developing"] as const).map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setProfileDisplayMode(m)}
+                          className={`rounded px-1.5 py-0.5 uppercase ${
+                            profileDisplayMode === m
+                              ? "bg-[#242b38] text-[#e6e9ef]"
+                              : "text-[#6e7787] hover:text-[#b4bccb]"
+                          }`}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                  }
+                />
               </div>
-
-              <CandleProfileChart
-                title="H1 Bias & Multi-Day Volume Profile"
-                subtitle={`${dataset.instrument} · Strict premarket cutoff ${formatPTTime(replayTs, !blindDate)} PT`}
-                candles={visibleH1}
-                profiles={profiles}
-                activeProfileMode={profileDisplayMode}
-                nakedPocs={profiles.nakedPocs}
-                zones={allZones}
-                activeZoneId={activeZoneId}
-                onSelectZone={setActiveZoneId}
-                drawZoneMode={drawZoneMode}
-                onDrawZoneComplete={handleDrawZoneComplete}
-                heightClass="h-[340px]"
-                defaultVisibleBars={96}
-              />
-
-              <CandleProfileChart
-                title="M30 Structure & Stacked Value Zones"
-                subtitle="Mark 2-3 untested levels before Tokyo open (4:00 PM PT)"
-                candles={visibleM30}
-                profiles={profiles}
-                activeProfileMode="pd"
-                nakedPocs={profiles.nakedPocs}
-                zones={allZones}
-                activeZoneId={activeZoneId}
-                onSelectZone={setActiveZoneId}
-                drawZoneMode={drawZoneMode}
-                onDrawZoneComplete={handleDrawZoneComplete}
-                asiaOpenTs={dataset.asiaOpenTs}
-                heightClass="h-[300px]"
-                defaultVisibleBars={80}
-              />
+              <div className="flex-1 min-h-[250px]">
+                <CandleProfileChart
+                  title="M30 Structure"
+                  candles={visibleM30}
+                  profiles={profiles}
+                  activeProfileMode="pd"
+                  nakedPocs={profiles.nakedPocs}
+                  zones={allZones}
+                  activeZoneId={activeZoneId}
+                  onSelectZone={setActiveZoneId}
+                  drawZoneMode={drawZoneMode}
+                  onDrawZoneComplete={handleDrawZoneComplete}
+                  asiaOpenTs={dataset.asiaOpenTs}
+                  defaultVisibleBars={80}
+                />
+              </div>
             </div>
 
-            <div className="xl:col-span-4">
+            <div className="min-h-0 overflow-hidden">
               <PremarketPanel
                 plan={plan}
                 onChangePlan={updatePlan}
@@ -1005,11 +1049,10 @@ export function BacktesterApp() {
           </div>
         )}
 
+        {/* 2. ASIA REPLAY WORKSPACE (Edge-to-Edge Hairline Pro Grid) */}
         {dataset && activeTab === "replay" && (
-          <div className="grid grid-cols-1 gap-3 p-3 pb-20 xl:grid-cols-12">
-            {/* Charts Grid (9 cols) */}
-            <div className="space-y-3 xl:col-span-9">
-              {/* Optional Blind Level-Touch Drill Mode Card */}
+          <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[1fr_312px]">
+            <div className="flex flex-col min-h-0 border-r border-[#1c212b] overflow-y-auto xl:overflow-hidden">
               {drillMode && (
                 <DrillModeCard
                   activeZone={activeZone}
@@ -1017,103 +1060,18 @@ export function BacktesterApp() {
                   drillCalls={drillCalls}
                   onLockCall={(call) => {
                     setDrillCalls((prev) => [call, ...prev]);
-                    flashToast(`Locked Drill Call at ${call.zoneLabel}. Step +30m to grade.`);
+                    flashToast(`Locked Drill Call at ${call.zoneLabel}.`);
                   }}
                   onStep6Bars={() => stepM5(6)}
                 />
               )}
 
-              {/* Replay Sub-Toolbar: Layout Presets, Profile Selector, Footprint Step, Tape Toggle */}
-              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] px-0.5">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="flex items-center gap-1 text-slate-500">
-                    <LayoutGrid className="h-3 w-3" /> Layout:
-                  </span>
-                  {(
-                    [
-                      { id: "standard", label: "Standard (4-Pane)" },
-                      { id: "dual_fp", label: "Dual FP (Bid×Ask + Delta)" },
-                      { id: "tape_focus", label: "M5 + Footprint Focus" },
-                    ] as const
-                  ).map((l) => (
-                    <button
-                      key={l.id}
-                      type="button"
-                      onClick={() => setReplayLayout(l.id)}
-                      className={`rounded px-2 py-0.5 text-[10px] font-medium border ${
-                        replayLayout === l.id
-                          ? "bg-sky-500/20 border-sky-500/50 text-sky-300"
-                          : "bg-[#0c1018] border-[#1c2436] text-slate-400"
-                      }`}
-                    >
-                      {l.label}
-                    </button>
-                  ))}
-
-                  <span className="ml-1 text-slate-600">|</span>
-                  {(["developing", "pd", "composite", "pw"] as const).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => setProfileDisplayMode(m)}
-                      className={`rounded px-1.5 py-0.5 text-[10px] uppercase border ${
-                        profileDisplayMode === m
-                          ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
-                          : "bg-[#0c1018] border-[#1c2436] text-slate-400"
-                      }`}
-                    >
-                      {m}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => setDrawZoneMode((d) => !d)}
-                    className={`rounded px-1.5 py-0.5 text-[10px] border ${
-                      drawZoneMode
-                        ? "bg-teal-500/20 border-teal-400 text-teal-200"
-                        : "bg-[#0c1018] border-[#1c2436] text-slate-400"
-                    }`}
-                  >
-                    {drawZoneMode ? "Drawing..." : "+ Zone (Z)"}
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-slate-500">FP Step:</span>
-                  {[0.25, 0.5, 1.0, 2.0].map((st) => (
-                    <button
-                      key={st}
-                      type="button"
-                      onClick={() => setFpStep(st)}
-                      className={`rounded px-1.5 py-0.5 font-mono-num text-[10px] border ${
-                        fpStep === st
-                          ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
-                          : "bg-[#0c1018] border-[#1c2436] text-slate-400"
-                      }`}
-                    >
-                      ${st.toFixed(2)}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => setShowTape((v) => !v)}
-                    className={`ml-1 rounded px-2 py-0.5 text-[10px] border ${
-                      showTape
-                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                        : "bg-[#0c1018] border-[#1c2436] text-slate-400"
-                    }`}
-                  >
-                    Tape {showTape ? "ON" : "OFF"}
-                  </button>
-                </div>
-              </div>
-
-              {/* Layout A: Standard 4-pane */}
+              {/* Standard 4-Pane Hairline Grid */}
               {replayLayout === "standard" && (
-                <>
-                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="flex-1 min-h-0 flex flex-col divide-y divide-[#1c212b]">
+                  <div className="flex-[1.55] min-h-[270px] grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-[#1c212b]">
                     <CandleProfileChart
-                      title="M5 Setup Chart + Profile + VWAP + BigTrades"
+                      title="M5 Setup · Profile · VWAP"
                       candles={visibleM5}
                       vwapSeries={vwapM5}
                       profiles={profiles}
@@ -1132,15 +1090,41 @@ export function BacktesterApp() {
                       onClickPrice={handleChartPricePick}
                       hoverTs={hoverTs}
                       onHoverTs={setHoverTs}
-                      heightClass="h-[365px]"
                       defaultVisibleBars={60}
+                      headerRight={
+                        <div className="flex items-center gap-1 text-[10px]">
+                          {(["developing", "pd", "composite"] as const).map((m) => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => setProfileDisplayMode(m)}
+                              className={`rounded px-1.5 py-0.5 uppercase ${
+                                profileDisplayMode === m
+                                  ? "bg-[#242b38] text-[#e6e9ef]"
+                                  : "text-[#6e7787] hover:text-[#b4bccb]"
+                              }`}
+                            >
+                              {m === "developing" ? "Dev" : m === "composite" ? "5D" : "PD"}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setDrawZoneMode((d) => !d)}
+                            className={`rounded px-1.5 py-0.5 ${
+                              drawZoneMode
+                                ? "bg-sky-500/20 text-sky-300"
+                                : "text-[#6e7787] hover:text-[#e6e9ef]"
+                            }`}
+                          >
+                            +Zone
+                          </button>
+                        </div>
+                      }
                     />
 
                     <FootprintChart
                       bars={footprintSuite.bars}
-                      hasRealAggressorTape={
-                        dataset.capabilities.hasRealAggressorTape
-                      }
+                      hasRealAggressorTape={dataset.capabilities.hasRealAggressorTape}
                       zones={allZones}
                       activeZoneId={activeZoneId}
                       priceStep={fpStep}
@@ -1151,18 +1135,12 @@ export function BacktesterApp() {
                         fetchFeed("paxg");
                       }}
                       onOpenCsvModal={() => setCsvModalOpen(true)}
-                      heightClass="h-[365px]"
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  <div className="flex-1 min-h-[180px] grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-[#1c212b]">
                     <CandleProfileChart
-                      title="M1 Execution Timing (1OZ $0.25 Grid)"
-                      subtitle={
-                        visibleM1.length > 0
-                          ? "Click crosshair in ticket to snap stops/triggers"
-                          : "M1 unavailable for dates > 5d old on GC=F; showing M5"
-                      }
+                      title="M1 Execution (1OZ $0.25)"
                       candles={visibleM1.length > 0 ? visibleM1 : visibleM5}
                       vwapSeries={visibleM1.length > 0 ? vwapM1 : vwapM5}
                       zones={allZones}
@@ -1175,54 +1153,49 @@ export function BacktesterApp() {
                       show1OZGrid
                       hoverTs={hoverTs}
                       onHoverTs={setHoverTs}
-                      heightClass="h-[225px]"
                       defaultVisibleBars={65}
                     />
 
                     <CvdChart
                       bars={footprintSuite.bars}
-                      hasRealAggressorTape={
-                        dataset.capabilities.hasRealAggressorTape
-                      }
-                      heightClass="h-[225px]"
+                      hasRealAggressorTape={dataset.capabilities.hasRealAggressorTape}
                     />
                   </div>
-                </>
+                </div>
               )}
 
-              {/* Layout B: Dual Footprint (ATAS Friend Template: M5 Bid×Ask + M5 Delta side by side) */}
+              {/* Dual Footprint Layout (ATAS Template) */}
               {replayLayout === "dual_fp" && (
-                <>
-                  <CandleProfileChart
-                    title="M5 Setup Chart + Profile + VWAP + BigTrades"
-                    candles={visibleM5}
-                    vwapSeries={vwapM5}
-                    profiles={profiles}
-                    activeProfileMode={profileDisplayMode}
-                    nakedPocs={profiles.nakedPocs}
-                    zones={allZones}
-                    activeZoneId={activeZoneId}
-                    bigTrades={footprintSuite.allBigTrades}
-                    positions={positions}
-                    pendingOrders={pendingOrders}
-                    asiaOpenTs={dataset.asiaOpenTs}
-                    drawZoneMode={drawZoneMode}
-                    pickPriceMode={pickPriceMode}
-                    onDrawZoneComplete={handleDrawZoneComplete}
-                    onSelectZone={setActiveZoneId}
-                    onClickPrice={handleChartPricePick}
-                    hoverTs={hoverTs}
-                    onHoverTs={setHoverTs}
-                    heightClass="h-[280px]"
-                    defaultVisibleBars={75}
-                  />
-                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="flex-1 min-h-0 flex flex-col divide-y divide-[#1c212b]">
+                  <div className="flex-1 min-h-[220px]">
+                    <CandleProfileChart
+                      title="M5 Setup · Profile · VWAP"
+                      candles={visibleM5}
+                      vwapSeries={vwapM5}
+                      profiles={profiles}
+                      activeProfileMode={profileDisplayMode}
+                      nakedPocs={profiles.nakedPocs}
+                      zones={allZones}
+                      activeZoneId={activeZoneId}
+                      bigTrades={footprintSuite.allBigTrades}
+                      positions={positions}
+                      pendingOrders={pendingOrders}
+                      asiaOpenTs={dataset.asiaOpenTs}
+                      drawZoneMode={drawZoneMode}
+                      pickPriceMode={pickPriceMode}
+                      onDrawZoneComplete={handleDrawZoneComplete}
+                      onSelectZone={setActiveZoneId}
+                      onClickPrice={handleChartPricePick}
+                      hoverTs={hoverTs}
+                      onHoverTs={setHoverTs}
+                      defaultVisibleBars={75}
+                    />
+                  </div>
+                  <div className="flex-[1.35] min-h-[260px] grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-[#1c212b]">
                     <FootprintChart
-                      title="M5 Footprint (Bid × Ask · 300% Imbalances)"
+                      title="M5 Footprint (Bid × Ask)"
                       bars={footprintSuite.bars}
-                      hasRealAggressorTape={
-                        dataset.capabilities.hasRealAggressorTape
-                      }
+                      hasRealAggressorTape={dataset.capabilities.hasRealAggressorTape}
                       zones={allZones}
                       activeZoneId={activeZoneId}
                       priceStep={fpStep}
@@ -1232,14 +1205,11 @@ export function BacktesterApp() {
                         fetchFeed("paxg");
                       }}
                       onOpenCsvModal={() => setCsvModalOpen(true)}
-                      heightClass="h-[340px]"
                     />
                     <FootprintChart
-                      title="M5 Delta Clusters (DeltaStrength + CVD)"
+                      title="M5 Delta Clusters"
                       bars={footprintSuite.bars}
-                      hasRealAggressorTape={
-                        dataset.capabilities.hasRealAggressorTape
-                      }
+                      hasRealAggressorTape={dataset.capabilities.hasRealAggressorTape}
                       zones={allZones}
                       activeZoneId={activeZoneId}
                       priceStep={fpStep}
@@ -1249,37 +1219,35 @@ export function BacktesterApp() {
                         fetchFeed("paxg");
                       }}
                       onOpenCsvModal={() => setCsvModalOpen(true)}
-                      heightClass="h-[340px]"
                     />
                   </div>
-                </>
+                </div>
               )}
 
-              {/* Layout C: M5 + Full-Width Footprint Focus */}
+              {/* Full-Width Footprint Focus */}
               {replayLayout === "tape_focus" && (
-                <>
-                  <FootprintChart
-                    title="M5 Footprint Full-Width Study View"
-                    bars={footprintSuite.bars}
-                    hasRealAggressorTape={
-                      dataset.capabilities.hasRealAggressorTape
-                    }
-                    zones={allZones}
-                    activeZoneId={activeZoneId}
-                    priceStep={fpStep}
-                    mode={footprintMode}
-                    onModeChange={setFootprintMode}
-                    onSwitchToPaxg={() => {
-                      setFeedPreset("paxg");
-                      fetchFeed("paxg");
-                    }}
-                    onOpenCsvModal={() => setCsvModalOpen(true)}
-                    heightClass="h-[410px]"
-                    defaultVisibleBars={14}
-                  />
-                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="flex-1 min-h-0 flex flex-col divide-y divide-[#1c212b]">
+                  <div className="flex-[1.6] min-h-[300px]">
+                    <FootprintChart
+                      title="M5 Footprint · Full Width"
+                      bars={footprintSuite.bars}
+                      hasRealAggressorTape={dataset.capabilities.hasRealAggressorTape}
+                      zones={allZones}
+                      activeZoneId={activeZoneId}
+                      priceStep={fpStep}
+                      mode={footprintMode}
+                      onModeChange={setFootprintMode}
+                      onSwitchToPaxg={() => {
+                        setFeedPreset("paxg");
+                        fetchFeed("paxg");
+                      }}
+                      onOpenCsvModal={() => setCsvModalOpen(true)}
+                      defaultVisibleBars={14}
+                    />
+                  </div>
+                  <div className="flex-1 min-h-[180px] grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-[#1c212b]">
                     <CandleProfileChart
-                      title="M5 Setup + Profile"
+                      title="M5 Setup · Profile"
                       candles={visibleM5}
                       vwapSeries={vwapM5}
                       profiles={profiles}
@@ -1292,21 +1260,16 @@ export function BacktesterApp() {
                       pickPriceMode={pickPriceMode}
                       onSelectZone={setActiveZoneId}
                       onClickPrice={handleChartPricePick}
-                      heightClass="h-[225px]"
                       defaultVisibleBars={50}
                     />
                     <CvdChart
                       bars={footprintSuite.bars}
-                      hasRealAggressorTape={
-                        dataset.capabilities.hasRealAggressorTape
-                      }
-                      heightClass="h-[225px]"
+                      hasRealAggressorTape={dataset.capabilities.hasRealAggressorTape}
                     />
                   </div>
-                </>
+                </div>
               )}
 
-              {/* Time & Sales Tape + BigTrades Threshold Calibrator */}
               {showTape && (
                 <TapePanel
                   ticks={visibleTicks}
@@ -1321,19 +1284,18 @@ export function BacktesterApp() {
                 />
               )}
 
-              {/* Optional L2 Depth Heatmap — OFF by default */}
               {showHeatmap && (
                 <HeatmapChart
                   l2Snapshots={visibleL2}
                   ticks={visibleTicks}
                   onOpenCsvModal={() => setCsvModalOpen(true)}
-                  heightClass="h-[250px]"
+                  heightClass="h-[210px]"
                 />
               )}
             </div>
 
-            {/* Right Dock: Execution, Guardrails & Position Manager (3 cols) */}
-            <div className="xl:col-span-3">
+            {/* Right Rail (Fixed 312px) */}
+            <div className="min-h-0 overflow-hidden">
               <ExecutionSidebar
                 currentPrice={currentPrice}
                 replayTs={replayTs}
@@ -1358,7 +1320,7 @@ export function BacktesterApp() {
                 onPlacePendingOrder={(ord) => {
                   setPendingOrders([ord]);
                   flashToast(
-                    `Working ${ord.side.toUpperCase()} ${ord.orderType.toUpperCase()} @ ${ord.triggerPriceExec.toFixed(2)} (auto-cancels beyond ${ord.invalidationPriceExec.toFixed(2)})`
+                    `Working ${ord.side.toUpperCase()} ${ord.orderType.toUpperCase()} @ ${ord.triggerPriceExec.toFixed(2)}`
                   );
                 }}
                 onCancelPendingOrder={(id) => {
@@ -1431,86 +1393,68 @@ export function BacktesterApp() {
         {activeTab === "playbook" && <PlaybookView />}
       </main>
 
-      {/* Sticky Bottom Replay Transport Bar */}
-      {dataset && (activeTab === "replay" || activeTab === "premarket") && (
-        <footer className="fixed bottom-0 left-0 right-0 z-30 flex flex-wrap items-center justify-between gap-2 border-t border-[#1c2436] bg-[#0a0e17]/95 px-3 py-2 text-xs backdrop-blur-xs">
+      {/* Sleek 40px Docked Replay Transport Bar */}
+      {dataset && isWorkstationView && (
+        <footer className="flex h-10 shrink-0 items-center justify-between gap-3 border-t border-[#1c212b] bg-[#0f1217] px-3 text-[11px]">
           <div className="flex items-center gap-1.5">
             <button
               type="button"
               onClick={() => setReplayTs(dataset.asiaOpenTs)}
-              className="rounded border border-[#26324a] bg-[#111827] px-2 py-1 text-[11px] text-slate-300 hover:bg-[#1a243b]"
-              title="Jump to Tokyo Open (4:00 PM PT)"
+              className="rounded px-2 py-1 text-[#8b94a5] hover:bg-[#191f2b] hover:text-[#e6e9ef]"
             >
-              Tokyo 16:00 PT
-            </button>
-            <button
-              type="button"
-              onClick={() => setReplayTs(dataset.asiaOpenTs + 3600_000)}
-              className="hidden sm:inline-flex rounded border border-[#26324a] bg-[#111827] px-2 py-1 text-[11px] text-slate-300 hover:bg-[#1a243b]"
-              title="Jump to China / SGE Open (5:00 PM PT)"
-            >
-              China 17:00 PT
+              Tokyo 16:00
             </button>
             <button
               type="button"
               onClick={jumpToNextLevelTouch}
-              className="flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 text-[11px] font-semibold text-amber-300 hover:bg-amber-500/25"
-              title="Skip dead mid-value chop and jump to next bar touching a key zone"
+              className="flex items-center gap-1 rounded bg-[#181c26] px-2.5 py-1 font-medium text-[#eab854] hover:bg-[#222836]"
             >
-              <FastForward className="h-3.5 w-3.5" /> Next Level Touch
+              <FastForward className="h-3 w-3" /> Next Touch
             </button>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
             <button
               type="button"
               onClick={() => stepM5(-1)}
-              className="rounded border border-[#26324a] bg-[#111827] p-1.5 text-slate-300 hover:bg-[#1a243b]"
-              title="Step back 1 M5 bar (Left Arrow)"
+              className="rounded p-1.5 text-[#8b94a5] hover:bg-[#191f2b] hover:text-[#e6e9ef]"
+              title="Back 1 M5 bar"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronLeft className="h-3.5 w-3.5" />
             </button>
             <button
               type="button"
               onClick={() => setIsPlaying((p) => !p)}
-              className={`flex items-center gap-1 rounded px-3 py-1.5 text-xs font-semibold text-white ${
-                isPlaying
-                  ? "bg-amber-600 hover:bg-amber-500"
-                  : "bg-sky-600 hover:bg-sky-500"
-              }`}
-              title="Play / Pause (Space)"
+              className="flex items-center gap-1 rounded bg-[#e6e9ef] px-3 py-1 text-[11px] font-semibold text-[#0b0d11] hover:bg-white"
             >
               {isPlaying ? (
                 <>
-                  <Pause className="h-3.5 w-3.5" /> Pause
+                  <Pause className="h-3 w-3" /> Pause
                 </>
               ) : (
                 <>
-                  <Play className="h-3.5 w-3.5" /> Play
+                  <Play className="h-3 w-3" /> Play
                 </>
               )}
             </button>
             <button
               type="button"
               onClick={() => stepM1(1)}
-              className="rounded border border-[#26324a] bg-[#111827] px-2 py-1 text-[11px] font-mono-num text-slate-200 hover:bg-[#1a243b]"
-              title="Step +1 M1 bar (Shift+Right)"
+              className="rounded px-2 py-1 font-mono-num text-[#8b94a5] hover:bg-[#191f2b] hover:text-[#e6e9ef]"
             >
               +1m
             </button>
             <button
               type="button"
               onClick={() => stepM5(1)}
-              className="flex items-center gap-0.5 rounded border border-sky-500/40 bg-sky-500/15 px-2.5 py-1 text-[11px] font-mono-num font-semibold text-sky-300 hover:bg-sky-500/25"
-              title="Step +1 M5 bar (Right Arrow)"
+              className="flex items-center gap-0.5 rounded bg-[#1a202e] px-2 py-1 font-mono-num font-medium text-[#e6e9ef] hover:bg-[#242c3f]"
             >
-              +5m <ChevronRight className="h-3.5 w-3.5" />
+              +5m <ChevronRight className="h-3 w-3" />
             </button>
             <button
               type="button"
               onClick={() => stepM5(6)}
-              className="hidden md:flex items-center gap-0.5 rounded border border-[#26324a] bg-[#111827] px-2 py-1 text-[11px] font-mono-num text-slate-300 hover:bg-[#1a243b]"
-              title="Step +30 min (6 M5 bars)"
+              className="hidden sm:flex items-center gap-0.5 rounded px-2 py-1 font-mono-num text-[#8b94a5] hover:bg-[#191f2b] hover:text-[#e6e9ef]"
             >
               +30m <SkipForward className="h-3 w-3" />
             </button>
@@ -1518,7 +1462,7 @@ export function BacktesterApp() {
             <select
               value={playSpeedMs}
               onChange={(e) => setPlaySpeedMs(Number(e.target.value))}
-              className="ml-1 rounded border border-[#26324a] bg-[#111827] px-1.5 py-1 font-mono-num text-[11px] text-slate-300"
+              className="ml-1 rounded bg-[#151922] px-1.5 py-1 font-mono-num text-[10.5px] text-[#8b94a5] border border-[#222836]"
             >
               <option value={1200}>0.5×</option>
               <option value={700}>1×</option>
@@ -1527,7 +1471,7 @@ export function BacktesterApp() {
             </select>
           </div>
 
-          <div className="flex items-center gap-3 min-w-[200px] flex-1 max-w-md">
+          <div className="hidden md:flex items-center gap-3 flex-1 max-w-sm">
             <input
               type="range"
               min={asiaBarsRange.minTs}
@@ -1541,11 +1485,11 @@ export function BacktesterApp() {
                 setIsPlaying(false);
                 setReplayTs(Number(e.target.value));
               }}
-              className="w-full accent-sky-400 cursor-pointer"
+              className="w-full cursor-pointer"
             />
-            <span className="shrink-0 font-mono-num text-[11px] text-slate-400">
+            <span className="shrink-0 font-mono-num text-[10.5px] text-[#7d8594]">
               {asiaBarsRange.currentIdx}/{asiaBarsRange.total} ·{" "}
-              <strong className="text-slate-200">{formatPTTime(replayTs)} PT</strong>
+              <strong className="text-[#e6e9ef]">{formatPTTime(replayTs)} PT</strong>
             </span>
           </div>
         </footer>

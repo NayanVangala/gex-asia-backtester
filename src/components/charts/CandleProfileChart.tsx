@@ -43,56 +43,66 @@ interface CandleProfileChartProps {
   defaultVisibleBars?: number;
   hoverTs?: number | null;
   onHoverTs?: (ts: number | null) => void;
+  headerRight?: React.ReactNode;
 }
 
-const ZONE_STYLE: Record<
+const ZONE_PALETTE: Record<
   KeyLevelZone["kind"],
-  { fill: string; stroke: string; text: string }
+  { fill: string; border: string; tagBg: string; tagText: string }
 > = {
   stacked: {
-    fill: "rgba(250, 204, 21, 0.16)",
-    stroke: "#facc15",
-    text: "#fde047",
+    fill: "rgba(212, 160, 58, 0.11)",
+    border: "rgba(212, 160, 58, 0.55)",
+    tagBg: "rgba(212, 160, 58, 0.18)",
+    tagText: "#eab854",
   },
   pd: {
-    fill: "rgba(245, 158, 11, 0.10)",
-    stroke: "#f59e0b",
-    text: "#fbbf24",
+    fill: "rgba(212, 160, 58, 0.06)",
+    border: "rgba(212, 160, 58, 0.32)",
+    tagBg: "rgba(30, 35, 45, 0.9)",
+    tagText: "#d4a03a",
   },
   pw: {
-    fill: "rgba(56, 189, 248, 0.10)",
-    stroke: "#38bdf8",
-    text: "#7dd3fc",
+    fill: "rgba(96, 165, 250, 0.06)",
+    border: "rgba(96, 165, 250, 0.34)",
+    tagBg: "rgba(22, 30, 44, 0.9)",
+    tagText: "#93c5fd",
   },
   composite: {
-    fill: "rgba(167, 139, 250, 0.10)",
-    stroke: "#a78bfa",
-    text: "#c4b5fd",
+    fill: "rgba(167, 139, 250, 0.06)",
+    border: "rgba(167, 139, 250, 0.32)",
+    tagBg: "rgba(28, 25, 42, 0.9)",
+    tagText: "#c4b5fd",
   },
   hvn: {
-    fill: "rgba(34, 197, 94, 0.08)",
-    stroke: "#22c55e",
-    text: "#86efac",
+    fill: "rgba(0, 192, 135, 0.05)",
+    border: "rgba(0, 192, 135, 0.28)",
+    tagBg: "rgba(16, 30, 28, 0.9)",
+    tagText: "#6ee7b7",
   },
   lvn: {
-    fill: "rgba(244, 63, 94, 0.08)",
-    stroke: "#f43f5e",
-    text: "#fda4af",
+    fill: "rgba(246, 70, 93, 0.05)",
+    border: "rgba(246, 70, 93, 0.28)",
+    tagBg: "rgba(34, 18, 24, 0.9)",
+    tagText: "#fda4af",
   },
   npoc: {
-    fill: "rgba(251, 146, 60, 0.10)",
-    stroke: "#fb923c",
-    text: "#fdba74",
+    fill: "rgba(245, 158, 11, 0.06)",
+    border: "rgba(245, 158, 11, 0.32)",
+    tagBg: "rgba(32, 24, 16, 0.9)",
+    tagText: "#fcd34d",
   },
   no_trade: {
-    fill: "rgba(100, 116, 139, 0.16)",
-    stroke: "#64748b",
-    text: "#94a3b8",
+    fill: "rgba(100, 116, 139, 0.08)",
+    border: "rgba(100, 116, 139, 0.28)",
+    tagBg: "rgba(24, 29, 38, 0.9)",
+    tagText: "#94a3b8",
   },
   custom: {
-    fill: "rgba(45, 212, 191, 0.14)",
-    stroke: "#2dd4bf",
-    text: "#5eead4",
+    fill: "rgba(56, 189, 248, 0.10)",
+    border: "rgba(56, 189, 248, 0.55)",
+    tagBg: "rgba(14, 34, 48, 0.92)",
+    tagText: "#7dd3fc",
   },
 };
 
@@ -116,10 +126,11 @@ export function CandleProfileChart({
   onSelectZone,
   onClickPrice,
   show1OZGrid = false,
-  heightClass = "h-[340px]",
+  heightClass = "h-full min-h-[260px]",
   defaultVisibleBars = 72,
   hoverTs,
   onHoverTs,
+  headerRight,
 }: CandleProfileChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -159,6 +170,24 @@ export function CandleProfileChart({
     return candles.slice(startIdx, endIdx);
   }, [candles, barsCount, rightOffset]);
 
+  // Show only top 4 clean zones (active + pinned + nearest) so chart never turns into label soup
+  const displayZones = useMemo(() => {
+    const picked: KeyLevelZone[] = [];
+    const seen = new Set<string>();
+    const add = (z: KeyLevelZone) => {
+      if (!seen.has(z.id)) {
+        seen.add(z.id);
+        picked.push(z);
+      }
+    };
+    const active = zones.find((z) => z.id === activeZoneId);
+    if (active) add(active);
+    zones.filter((z) => z.kind === "custom").forEach(add);
+    zones.filter((z) => z.pinned).slice(0, 3).forEach(add);
+    if (picked.length < 3) zones.slice(0, 3).forEach(add);
+    return picked.slice(0, 4);
+  }, [zones, activeZoneId]);
+
   const vwapMap = useMemo(() => {
     const m = new Map<number, number>();
     for (const v of vwapSeries) m.set(v.ts, v.vwap);
@@ -191,23 +220,23 @@ export function CandleProfileChart({
       lo = Math.min(lo, o.triggerPriceExec, o.invalidationPriceExec, o.stopPriceExec);
       hi = Math.max(hi, o.triggerPriceExec, o.invalidationPriceExec, o.stopPriceExec);
     }
-    const pad = Math.max((hi - lo) * 0.14, 1.5);
+    const pad = Math.max((hi - lo) * 0.14, 1.2);
     return { min: lo - pad, max: hi + pad };
   }, [visibleSlice, positions, pendingOrders]);
 
   const layout = useMemo(() => {
-    const padLeft = 8;
-    const padTop = 14;
-    const padBottom = 24;
-    const axisRightWidth = 66;
-    const profileWidth = activeProfile ? 68 : 0;
+    const padLeft = 10;
+    const padTop = 12;
+    const padBottom = 22;
+    const axisRightWidth = 64;
+    const profileWidth = activeProfile ? 58 : 0;
     const plotWidth = Math.max(
       80,
       dims.width - padLeft - axisRightWidth - profileWidth - 6
     );
     const plotHeight = Math.max(80, dims.height - padTop - padBottom);
-    const volHeight = Math.min(46, Math.floor(plotHeight * 0.18));
-    const priceHeight = plotHeight - volHeight - 6;
+    const volHeight = Math.min(38, Math.floor(plotHeight * 0.15));
+    const priceHeight = plotHeight - volHeight - 4;
 
     return {
       padLeft,
@@ -243,23 +272,38 @@ export function CandleProfileChart({
     canvas.height = dims.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    ctx.fillStyle = "#090d14";
+    ctx.fillStyle = "#0b0d11";
     ctx.fillRect(0, 0, dims.width, dims.height);
 
     const { padLeft, padTop, plotWidth, priceHeight, volHeight, profileWidth } = layout;
+    const axisX = dims.width - layout.axisRightWidth;
+
+    // Right price axis separator
+    ctx.strokeStyle = "#171b24";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(axisX + 0.5, 0);
+    ctx.lineTo(axisX + 0.5, dims.height - layout.padBottom);
+    ctx.stroke();
+
+    // Bottom time axis separator
+    ctx.beginPath();
+    ctx.moveTo(0, dims.height - layout.padBottom + 0.5);
+    ctx.lineTo(dims.width, dims.height - layout.padBottom + 0.5);
+    ctx.stroke();
 
     if (visibleSlice.length === 0) {
-      ctx.fillStyle = "#64748b";
-      ctx.font = "12px ui-monospace, monospace";
+      ctx.fillStyle = "#586070";
+      ctx.font = "11px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("No candles in view", dims.width / 2, dims.height / 2);
+      ctx.fillText("Waiting for session bars...", dims.width / 2, dims.height / 2);
       return;
     }
 
-    // Horizontal grid lines + price labels
-    const numGrid = 6;
+    // Subtle horizontal gridlines
+    const numGrid = 5;
     const priceSpan = priceBounds.max - priceBounds.min;
-    ctx.strokeStyle = "#141b29";
+    ctx.strokeStyle = "#12161e";
     ctx.lineWidth = 1;
     ctx.font = "10px ui-monospace, monospace";
     ctx.textAlign = "left";
@@ -269,18 +313,14 @@ export function CandleProfileChart({
       const y = Math.round(priceToY(p)) + 0.5;
       ctx.beginPath();
       ctx.moveTo(padLeft, y);
-      ctx.lineTo(dims.width - layout.axisRightWidth, y);
+      ctx.lineTo(axisX, y);
       ctx.stroke();
 
-      ctx.fillStyle = "#7c8aa5";
-      ctx.fillText(
-        p.toFixed(show1OZGrid ? 2 : 1),
-        dims.width - layout.axisRightWidth + 6,
-        y + 3
-      );
+      ctx.fillStyle = "#626b7c";
+      ctx.fillText(p.toFixed(show1OZGrid ? 2 : 1), axisX + 7, y + 3);
     }
 
-    // Developing Value no-trade shading
+    // Developing Value middle shading (very understated)
     if (profiles?.developing) {
       const dev = profiles.developing;
       const yVah = priceToY(dev.vah);
@@ -288,10 +328,10 @@ export function CandleProfileChart({
       const top = Math.max(padTop, Math.min(yVah, yVal));
       const bot = Math.min(padTop + priceHeight, Math.max(yVah, yVal));
       if (bot > top) {
-        ctx.fillStyle = "rgba(100, 116, 139, 0.09)";
+        ctx.fillStyle = "rgba(139, 148, 165, 0.045)";
         ctx.fillRect(padLeft, top, plotWidth, bot - top);
-        ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
-        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = "rgba(139, 148, 165, 0.18)";
+        ctx.setLineDash([2, 4]);
         ctx.beginPath();
         ctx.moveTo(padLeft, yVah);
         ctx.lineTo(padLeft + plotWidth, yVah);
@@ -302,9 +342,9 @@ export function CandleProfileChart({
 
         const yPoc = priceToY(dev.poc);
         if (yPoc >= padTop && yPoc <= padTop + priceHeight) {
-          ctx.strokeStyle = "rgba(251, 191, 36, 0.55)";
+          ctx.strokeStyle = "rgba(212, 160, 58, 0.45)";
           ctx.lineWidth = 1;
-          ctx.setLineDash([4, 2]);
+          ctx.setLineDash([3, 3]);
           ctx.beginPath();
           ctx.moveTo(padLeft, yPoc);
           ctx.lineTo(padLeft + plotWidth, yPoc);
@@ -314,22 +354,23 @@ export function CandleProfileChart({
       }
     }
 
-    // Key Level Zones
-    for (const z of zones) {
+    // Key Level Zones (clean subtle bands + compact non-overlapping pill tags)
+    const usedLabelYs: number[] = [];
+    for (const z of displayZones) {
       const yTop = priceToY(z.high);
       const yBot = priceToY(z.low);
       if (yBot < padTop || yTop > padTop + priceHeight) continue;
       const clampedTop = Math.max(padTop, yTop);
       const clampedBot = Math.min(padTop + priceHeight, yBot);
-      const st = ZONE_STYLE[z.kind] ?? ZONE_STYLE.custom;
+      const st = ZONE_PALETTE[z.kind] ?? ZONE_PALETTE.custom;
       const isSelected = z.id === activeZoneId;
 
-      ctx.fillStyle = isSelected ? "rgba(250, 204, 21, 0.25)" : st.fill;
+      ctx.fillStyle = isSelected ? "rgba(212, 160, 58, 0.15)" : st.fill;
       ctx.fillRect(padLeft, clampedTop, plotWidth, Math.max(2, clampedBot - clampedTop));
 
-      ctx.strokeStyle = isSelected ? "#fef08a" : st.stroke;
-      ctx.lineWidth = isSelected ? 1.5 : 1;
-      if (!z.pinned && !isSelected) ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = isSelected ? "#d4a03a" : st.border;
+      ctx.lineWidth = isSelected ? 1.2 : 0.8;
+      if (!isSelected) ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(padLeft, clampedTop);
       ctx.lineTo(padLeft + plotWidth, clampedTop);
@@ -338,18 +379,29 @@ export function CandleProfileChart({
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = st.text;
-      ctx.font = isSelected ? "bold 10px ui-monospace, monospace" : "10px ui-monospace, monospace";
-      const badge = `${z.label} (${z.low.toFixed(1)}-${z.high.toFixed(1)})${z.untested ? " [UNTESTED]" : ""}`;
-      ctx.fillText(badge, padLeft + 6, Math.max(padTop + 10, clampedTop + 11));
+      // Compact tag on left only if it doesn't collide vertically with another tag
+      const labelY = Math.max(padTop + 11, clampedTop + 11);
+      if (usedLabelYs.every((uy) => Math.abs(uy - labelY) >= 15)) {
+        usedLabelYs.push(labelY);
+        const shortLabel = z.label
+          .replace("STACKED: ", "★ ")
+          .slice(0, 26);
+        const txt = `${shortLabel} ${z.low.toFixed(1)}-${z.high.toFixed(1)}`;
+        ctx.font = "500 9.5px ui-monospace, monospace";
+        const tw = ctx.measureText(txt).width;
+        ctx.fillStyle = st.tagBg;
+        ctx.fillRect(padLeft + 4, labelY - 9, tw + 8, 13);
+        ctx.fillStyle = isSelected ? "#f6d27a" : st.tagText;
+        ctx.fillText(txt, padLeft + 8, labelY + 1);
+      }
     }
 
-    // Naked POCs
-    for (const np of nakedPocs) {
+    // Naked POCs (subtle dotted ray)
+    for (const np of nakedPocs.slice(-2)) {
       if (!np.untested) continue;
       const y = priceToY(np.price);
       if (y < padTop || y > padTop + priceHeight) continue;
-      ctx.strokeStyle = "#fb923c";
+      ctx.strokeStyle = "rgba(212, 160, 58, 0.45)";
       ctx.lineWidth = 1;
       ctx.setLineDash([2, 4]);
       ctx.beginPath();
@@ -357,63 +409,66 @@ export function CandleProfileChart({
       ctx.lineTo(padLeft + plotWidth, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = "#fdba74";
+      ctx.fillStyle = "#b88a32";
       ctx.font = "9px ui-monospace, monospace";
-      ctx.fillText(`nPOC ${np.price.toFixed(1)}`, padLeft + plotWidth - 88, y - 3);
+      ctx.fillText(`nPOC ${np.price.toFixed(1)}`, padLeft + plotWidth - 76, y - 3);
     }
 
-    // Tokyo open vertical line
+    // Tokyo Open marker
     const stepX = plotWidth / Math.max(1, visibleSlice.length);
-    const candleWidth = Math.max(2, Math.min(14, stepX * 0.68));
+    const candleWidth = Math.max(2, Math.min(11, stepX * 0.64));
     if (asiaOpenTs) {
       const idx = visibleSlice.findIndex((c) => c.ts >= asiaOpenTs);
       if (idx > 0) {
-        const x = padLeft + idx * stepX + stepX / 2;
-        ctx.strokeStyle = "rgba(56, 189, 248, 0.4)";
+        const x = Math.round(padLeft + idx * stepX + stepX / 2) + 0.5;
+        ctx.strokeStyle = "rgba(139, 148, 165, 0.22)";
         ctx.lineWidth = 1;
-        ctx.setLineDash([3, 3]);
+        ctx.setLineDash([2, 4]);
         ctx.beginPath();
         ctx.moveTo(x, padTop);
         ctx.lineTo(x, padTop + priceHeight + volHeight);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = "#38bdf8";
+        ctx.fillStyle = "#626b7c";
         ctx.font = "9px ui-monospace, monospace";
-        ctx.fillText("TOKYO 16:00 PT", x + 4, padTop + 11);
+        ctx.fillText("TOKYO 16:00", x + 4, padTop + 10);
       }
     }
 
-    // Candles + Volume Histogram
+    // Candles + Subtle Volume Bars
     const maxVol = Math.max(...visibleSlice.map((c) => c.volume), 1);
-    const volTop = padTop + priceHeight + 6;
+    const volTop = padTop + priceHeight + 4;
 
     for (let i = 0; i < visibleSlice.length; i++) {
       const c = visibleSlice[i];
       const cx = padLeft + i * stepX + stepX / 2;
       const isUp = c.close >= c.open;
-      const color = isUp ? "#10b981" : "#ef4444";
+      const bodyColor = isUp ? "#00c087" : "#f6465d";
 
       const yHigh = priceToY(c.high);
       const yLow = priceToY(c.low);
       const yOpen = priceToY(c.open);
       const yClose = priceToY(c.close);
 
-      ctx.strokeStyle = color;
+      // Crisp 1px wick
+      ctx.strokeStyle = bodyColor;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(Math.round(cx) + 0.5, yHigh);
       ctx.lineTo(Math.round(cx) + 0.5, yLow);
       ctx.stroke();
 
+      // Body
       const bodyTop = Math.min(yOpen, yClose);
-      const bodyH = Math.max(1.5, Math.abs(yClose - yOpen));
-      ctx.fillStyle = isUp ? "#059669" : "#dc2626";
+      const bodyH = Math.max(1.2, Math.abs(yClose - yOpen));
+      ctx.fillStyle = bodyColor;
       ctx.fillRect(cx - candleWidth / 2, bodyTop, candleWidth, bodyH);
 
-      const vh = (c.volume / maxVol) * (volHeight - 4);
+      // Volume bar
+      const vh = (c.volume / maxVol) * (volHeight - 2);
       ctx.fillStyle = isUp
-        ? "rgba(16, 185, 129, 0.35)"
-        : "rgba(239, 68, 68, 0.35)";
+        ? "rgba(0, 192, 135, 0.22)"
+        : "rgba(246, 70, 93, 0.22)";
       ctx.fillRect(
         cx - candleWidth / 2,
         volTop + volHeight - vh,
@@ -422,10 +477,10 @@ export function CandleProfileChart({
       );
     }
 
-    // VWAP curve
+    // VWAP smooth line
     if (vwapMap.size > 0) {
-      ctx.strokeStyle = "#e2e8f0";
-      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = "rgba(230, 233, 239, 0.72)";
+      ctx.lineWidth = 1.25;
       ctx.beginPath();
       let started = false;
       for (let i = 0; i < visibleSlice.length; i++) {
@@ -447,7 +502,7 @@ export function CandleProfileChart({
       ctx.stroke();
     }
 
-    // Big Trades markers
+    // Big Trades markers (subtle, clean rings)
     if (bigTrades.length > 0) {
       const tsToIdx = new Map<number, number>();
       visibleSlice.forEach((c, idx) => tsToIdx.set(c.ts, idx));
@@ -457,43 +512,45 @@ export function CandleProfileChart({
         const cx = padLeft + idx * stepX + stepX / 2;
         const cy = priceToY(bt.price);
         if (cy < padTop || cy > padTop + priceHeight) continue;
-        const radius = bt.tier === "whale" ? 6 : 3.5;
+        const radius = bt.tier === "whale" ? 5 : 3;
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
         ctx.fillStyle =
           bt.side === "buy"
-            ? "rgba(34, 197, 94, 0.72)"
+            ? "rgba(0, 192, 135, 0.55)"
             : bt.side === "sell"
-              ? "rgba(244, 63, 94, 0.72)"
-              : "rgba(250, 204, 21, 0.65)";
+              ? "rgba(246, 70, 93, 0.55)"
+              : "rgba(212, 160, 58, 0.55)";
         ctx.fill();
-        ctx.strokeStyle = bt.tier === "whale" ? "#fef08a" : "#0b0f17";
-        ctx.lineWidth = bt.tier === "whale" ? 1.6 : 1;
-        ctx.stroke();
+        if (bt.tier === "whale") {
+          ctx.strokeStyle = "#eab854";
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+        }
       }
     }
 
-    // Right-Hand Volume Profile Histogram
+    // Right-Hand Volume Profile Histogram (Exocharts subtle graphite + gold POC)
     if (activeProfile && profileWidth > 0) {
-      const profRightX = dims.width - layout.axisRightWidth - 2;
+      const profRightX = axisX - 2;
       const maxBinVol = Math.max(...activeProfile.bins.map((b) => b.volume), 1);
 
       for (const bin of activeProfile.bins) {
         const y = priceToY(bin.price);
         if (y < padTop || y > padTop + priceHeight) continue;
-        const barW = Math.max(2, (bin.volume / maxBinVol) * (profileWidth - 4));
+        const barW = Math.max(1.5, (bin.volume / maxBinVol) * (profileWidth - 4));
         const inVa = bin.price >= activeProfile.val && bin.price <= activeProfile.vah;
         const isPoc = Math.abs(bin.price - activeProfile.poc) < 1e-4;
 
         ctx.fillStyle = isPoc
-          ? "#facc15"
+          ? "#d4a03a"
           : inVa
-            ? "rgba(56, 189, 248, 0.42)"
-            : "rgba(100, 116, 139, 0.28)";
-        ctx.fillRect(profRightX - barW, y - 1.5, barW, 3);
+            ? "rgba(148, 163, 184, 0.34)"
+            : "rgba(71, 85, 105, 0.22)";
+        ctx.fillRect(profRightX - barW, y - 1.2, barW, 2.4);
       }
 
-      const drawTag = (p: number, lbl: string, color: string) => {
+      const drawProfileTick = (p: number, lbl: string, color: string) => {
         const y = priceToY(p);
         if (y < padTop || y > padTop + priceHeight) return;
         ctx.strokeStyle = color;
@@ -503,37 +560,37 @@ export function CandleProfileChart({
         ctx.lineTo(profRightX, y);
         ctx.stroke();
         ctx.fillStyle = color;
-        ctx.font = "bold 9px ui-monospace, monospace";
-        ctx.fillText(lbl, profRightX - profileWidth + 2, y - 2);
+        ctx.font = "600 8.5px ui-monospace, monospace";
+        ctx.fillText(lbl, profRightX - profileWidth + 1, y - 2.5);
       };
-      drawTag(activeProfile.vah, "VAH", "#38bdf8");
-      drawTag(activeProfile.poc, "POC", "#facc15");
-      drawTag(activeProfile.val, "VAL", "#38bdf8");
+      drawProfileTick(activeProfile.vah, "VAH", "#8b94a5");
+      drawProfileTick(activeProfile.poc, "POC", "#d4a03a");
+      drawProfileTick(activeProfile.val, "VAL", "#8b94a5");
     }
 
-    // Pending Working Orders (Buy/Sell Stop & Limit + Auto-Cancel Invalidation Line)
+    // Pending Working Orders
     for (const ord of pendingOrders) {
       const yTrig = priceToY(ord.triggerPriceExec);
       const yInv = priceToY(ord.invalidationPriceExec);
       if (yTrig >= padTop && yTrig <= padTop + priceHeight) {
-        ctx.strokeStyle = "#facc15";
-        ctx.lineWidth = 1.4;
-        ctx.setLineDash([6, 3]);
+        ctx.strokeStyle = "#d4a03a";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([5, 3]);
         ctx.beginPath();
         ctx.moveTo(padLeft, yTrig);
         ctx.lineTo(padLeft + plotWidth, yTrig);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = "#fde047";
-        ctx.font = "bold 10px ui-monospace, monospace";
+        ctx.fillStyle = "#eab854";
+        ctx.font = "600 9.5px ui-monospace, monospace";
         ctx.fillText(
-          `WORKING ${ord.side.toUpperCase()} ${ord.orderType.toUpperCase()} @ ${ord.triggerPriceExec.toFixed(2)}`,
+          `${ord.side.toUpperCase()} ${ord.orderType.toUpperCase()} ${ord.triggerPriceExec.toFixed(2)}`,
           padLeft + 8,
           yTrig - 4
         );
       }
       if (yInv >= padTop && yInv <= padTop + priceHeight) {
-        ctx.strokeStyle = "rgba(244, 63, 94, 0.7)";
+        ctx.strokeStyle = "rgba(246, 70, 93, 0.65)";
         ctx.lineWidth = 1;
         ctx.setLineDash([2, 3]);
         ctx.beginPath();
@@ -541,17 +598,13 @@ export function CandleProfileChart({
         ctx.lineTo(padLeft + plotWidth, yInv);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = "#fda4af";
+        ctx.fillStyle = "#f6465d";
         ctx.font = "9px ui-monospace, monospace";
-        ctx.fillText(
-          `AUTO-CANCEL INVALIDATION ${ord.invalidationPriceExec.toFixed(2)}`,
-          padLeft + 8,
-          yInv + 10
-        );
+        ctx.fillText(`CANCEL ${ord.invalidationPriceExec.toFixed(2)}`, padLeft + 8, yInv + 10);
       }
     }
 
-    // Open & Closed Positions (Bracket lines + Risk/Reward Box + Entry/Exit Triangles)
+    // Open & Closed Positions
     const findBarX = (ts: number) => {
       let idx = visibleSlice.findIndex((c) => c.ts >= ts);
       if (idx === -1) idx = visibleSlice.length - 1;
@@ -563,19 +616,18 @@ export function CandleProfileChart({
       const entryY = priceToY(pos.entryPriceExec);
 
       if (pos.status === "open") {
-        // Shaded Risk & Reward bracket boxes from entry bar forward
         const rightEdge = padLeft + plotWidth;
         const stopY = priceToY(pos.stopPriceExec);
         const t2Y = priceToY(pos.t2PriceExec);
 
-        ctx.fillStyle = "rgba(239, 68, 68, 0.08)";
+        ctx.fillStyle = "rgba(246, 70, 93, 0.07)";
         ctx.fillRect(
           entryX,
           Math.min(entryY, stopY),
           Math.max(12, rightEdge - entryX),
           Math.abs(stopY - entryY)
         );
-        ctx.fillStyle = "rgba(16, 185, 129, 0.08)";
+        ctx.fillStyle = "rgba(0, 192, 135, 0.07)";
         ctx.fillRect(
           entryX,
           Math.min(entryY, t2Y),
@@ -587,33 +639,28 @@ export function CandleProfileChart({
           const y = priceToY(price);
           if (y < padTop || y > padTop + priceHeight) return;
           ctx.strokeStyle = color;
-          ctx.lineWidth = 1.3;
-          ctx.setLineDash([5, 3]);
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([4, 3]);
           ctx.beginPath();
           ctx.moveTo(padLeft, y);
           ctx.lineTo(padLeft + plotWidth, y);
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.fillStyle = color;
-          ctx.font = "bold 10px ui-monospace, monospace";
+          ctx.font = "600 9.5px ui-monospace, monospace";
           ctx.fillText(`${label} ${price.toFixed(2)}`, padLeft + 8, y - 4);
         };
-        drawOrderLine(
-          pos.entryPriceExec,
-          `${pos.side.toUpperCase()} ${pos.contracts}×`,
-          "#38bdf8"
-        );
-        drawOrderLine(pos.stopPriceExec, "STOP", "#ef4444");
-        drawOrderLine(pos.t1PriceExec, "T1", "#10b981");
-        drawOrderLine(pos.t2PriceExec, "T2", "#22c55e");
+        drawOrderLine(pos.entryPriceExec, `${pos.side.toUpperCase()} ${pos.contracts}×`, "#e6e9ef");
+        drawOrderLine(pos.stopPriceExec, "SL", "#f6465d");
+        drawOrderLine(pos.t1PriceExec, "T1", "#00c087");
+        drawOrderLine(pos.t2PriceExec, "T2", "#34d399");
       } else if (pos.closedAtTs && pos.exitPriceExec !== undefined) {
-        // Closed trade trade-replay connector + entry/exit triangles + R badge
         const exitX = findBarX(pos.closedAtTs);
         const exitY = priceToY(pos.exitPriceExec);
         const win = (pos.rMultiple ?? 0) >= 0;
 
-        ctx.strokeStyle = win ? "#34d399" : "#fb7185";
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = win ? "#00c087" : "#f6465d";
+        ctx.lineWidth = 1.3;
         ctx.setLineDash([3, 2]);
         ctx.beginPath();
         ctx.moveTo(entryX, entryY);
@@ -621,73 +668,67 @@ export function CandleProfileChart({
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Entry triangle
-        ctx.fillStyle = pos.side === "long" ? "#10b981" : "#f43f5e";
+        ctx.fillStyle = pos.side === "long" ? "#00c087" : "#f6465d";
         ctx.beginPath();
         if (pos.side === "long") {
           ctx.moveTo(entryX, entryY - 5);
-          ctx.lineTo(entryX - 5, entryY + 5);
-          ctx.lineTo(entryX + 5, entryY + 5);
+          ctx.lineTo(entryX - 4.5, entryY + 4);
+          ctx.lineTo(entryX + 4.5, entryY + 4);
         } else {
           ctx.moveTo(entryX, entryY + 5);
-          ctx.lineTo(entryX - 5, entryY - 5);
-          ctx.lineTo(entryX + 5, entryY - 5);
+          ctx.lineTo(entryX - 4.5, entryY - 4);
+          ctx.lineTo(entryX + 4.5, entryY - 4);
         }
         ctx.closePath();
         ctx.fill();
 
-        // Exit pill
         const rTxt = `${(pos.rMultiple ?? 0) >= 0 ? "+" : ""}${(pos.rMultiple ?? 0).toFixed(2)}R`;
-        ctx.fillStyle = win ? "#065f46" : "#881337";
-        ctx.fillRect(exitX - 18, exitY - 16, 40, 14);
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 9px ui-monospace, monospace";
-        ctx.fillText(rTxt, exitX - 14, exitY - 6);
+        ctx.fillStyle = win ? "#064e3b" : "#4c0519";
+        ctx.fillRect(exitX - 18, exitY - 15, 38, 13);
+        ctx.fillStyle = win ? "#6ee7b7" : "#fda4af";
+        ctx.font = "600 9px ui-monospace, monospace";
+        ctx.fillText(rTxt, exitX - 14, exitY - 5.5);
       }
     }
 
-    // Draw interactive zone preview while dragging
+    // Zone drag preview
     if (drawZoneMode && drawStartPrice !== null && drawCurrentPrice !== null) {
       const y1 = priceToY(Math.max(drawStartPrice, drawCurrentPrice));
       const y2 = priceToY(Math.min(drawStartPrice, drawCurrentPrice));
-      ctx.fillStyle = "rgba(45, 212, 191, 0.22)";
+      ctx.fillStyle = "rgba(56, 189, 248, 0.14)";
       ctx.fillRect(padLeft, y1, plotWidth, Math.max(2, y2 - y1));
-      ctx.strokeStyle = "#2dd4bf";
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 1.2;
       ctx.strokeRect(padLeft, y1, plotWidth, Math.max(2, y2 - y1));
     }
 
-    // Current Last Price badge
+    // Last Price pill on right axis
     const lastCandle = visibleSlice[visibleSlice.length - 1];
     if (lastCandle) {
       const ly = priceToY(lastCandle.close);
       const isUp = lastCandle.close >= lastCandle.open;
-      ctx.fillStyle = isUp ? "#059669" : "#dc2626";
-      ctx.fillRect(dims.width - layout.axisRightWidth, ly - 8, layout.axisRightWidth - 2, 16);
+      ctx.fillStyle = isUp ? "#00a876" : "#dc354d";
+      ctx.fillRect(axisX + 1, ly - 8, layout.axisRightWidth - 3, 16);
       ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 10px ui-monospace, monospace";
-      ctx.fillText(
-        lastCandle.close.toFixed(2),
-        dims.width - layout.axisRightWidth + 5,
-        ly + 3
-      );
+      ctx.font = "600 10px ui-monospace, monospace";
+      ctx.fillText(lastCandle.close.toFixed(2), axisX + 6, ly + 3.5);
     }
 
-    // Time Axis labels (PT)
-    ctx.fillStyle = "#7c8aa5";
-    ctx.font = "10px ui-monospace, monospace";
+    // Time Axis labels
+    ctx.fillStyle = "#586070";
+    ctx.font = "9.5px ui-monospace, monospace";
     const labelEvery = Math.max(1, Math.floor(visibleSlice.length / 7));
     for (let i = 0; i < visibleSlice.length; i += labelEvery) {
       const x = padLeft + i * stepX + stepX / 2;
-      ctx.fillText(formatPTTime(visibleSlice[i].ts), x - 16, dims.height - 6);
+      ctx.fillText(formatPTTime(visibleSlice[i].ts), x - 14, dims.height - 6);
     }
 
-    // Synced external hover vertical line
+    // Synced hover line
     if (hoverTs && !mousePos) {
       const idx = visibleSlice.findIndex((c) => c.ts >= hoverTs);
       if (idx !== -1) {
-        const hx = padLeft + idx * stepX + stepX / 2;
-        ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+        const hx = Math.round(padLeft + idx * stepX + stepX / 2) + 0.5;
+        ctx.strokeStyle = "rgba(139, 148, 165, 0.28)";
         ctx.setLineDash([2, 3]);
         ctx.beginPath();
         ctx.moveTo(hx, padTop);
@@ -697,49 +738,45 @@ export function CandleProfileChart({
       }
     }
 
-    // Local Crosshair + Click-to-Pick Price label
+    // Crosshair
     if (mousePos) {
       const { x, y } = mousePos;
       const pickColor =
         pickPriceMode === "stop"
-          ? "#ef4444"
+          ? "#f6465d"
           : pickPriceMode === "t1" || pickPriceMode === "t2"
-            ? "#10b981"
+            ? "#00c087"
             : pickPriceMode === "entry"
-              ? "#facc15"
-              : "rgba(148, 163, 184, 0.45)";
+              ? "#d4a03a"
+              : "rgba(139, 148, 165, 0.36)";
 
       ctx.strokeStyle = pickColor;
-      ctx.lineWidth = pickPriceMode ? 1.4 : 1;
+      ctx.lineWidth = pickPriceMode ? 1.2 : 0.9;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(x, padTop);
       ctx.lineTo(x, padTop + priceHeight + volHeight);
       ctx.moveTo(padLeft, y);
-      ctx.lineTo(dims.width - layout.axisRightWidth, y);
+      ctx.lineTo(axisX, y);
       ctx.stroke();
       ctx.setLineDash([]);
 
       const hp = yToPrice(y);
-      ctx.fillStyle = pickPriceMode ? "#0f172a" : "#1e293b";
-      ctx.fillRect(dims.width - layout.axisRightWidth, y - 8, layout.axisRightWidth - 2, 16);
-      ctx.fillStyle = pickPriceMode ? pickColor : "#f8fafc";
-      ctx.font = "bold 10px ui-monospace, monospace";
-      ctx.fillText(hp.toFixed(2), dims.width - layout.axisRightWidth + 5, y + 3);
+      ctx.fillStyle = "#202633";
+      ctx.fillRect(axisX + 1, y - 8, layout.axisRightWidth - 3, 16);
+      ctx.fillStyle = pickPriceMode ? pickColor : "#e6e9ef";
+      ctx.font = "600 10px ui-monospace, monospace";
+      ctx.fillText(hp.toFixed(2), axisX + 6, y + 3.5);
 
       if (pickPriceMode) {
-        ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
-        ctx.fillRect(x + 10, y - 16, 132, 18);
+        ctx.fillStyle = "#12161f";
+        ctx.fillRect(x + 10, y - 16, 128, 18);
         ctx.strokeStyle = pickColor;
         ctx.lineWidth = 1;
-        ctx.strokeRect(x + 10, y - 16, 132, 18);
+        ctx.strokeRect(x + 10, y - 16, 128, 18);
         ctx.fillStyle = pickColor;
-        ctx.font = "bold 10px ui-monospace, monospace";
-        ctx.fillText(
-          `SET ${pickPriceMode.toUpperCase()}: ${hp.toFixed(2)}`,
-          x + 15,
-          y - 4
-        );
+        ctx.font = "600 9.5px ui-monospace, monospace";
+        ctx.fillText(`SET ${pickPriceMode.toUpperCase()} ${hp.toFixed(2)}`, x + 15, y - 4);
       }
     }
   }, [
@@ -747,7 +784,7 @@ export function CandleProfileChart({
     visibleSlice,
     priceBounds,
     layout,
-    zones,
+    displayZones,
     activeZoneId,
     profiles,
     activeProfile,
@@ -800,7 +837,7 @@ export function CandleProfileChart({
       return;
     }
 
-    const hitZone = zones.find(
+    const hitZone = displayZones.find(
       (z) => clickedPrice >= z.low && clickedPrice <= z.high
     );
     if (hitZone && onSelectZone && e.detail === 1) {
@@ -853,55 +890,47 @@ export function CandleProfileChart({
   };
 
   return (
-    <div className="flex flex-col rounded-lg border border-[#1c2436] bg-[#090d14] overflow-hidden">
-      <div className="flex items-center justify-between gap-2 border-b border-[#1c2436] bg-[#0c111b] px-3 py-1.5 text-xs">
+    <div className="flex flex-col bg-[#0b0d11] overflow-hidden h-full">
+      <div className="flex h-7 shrink-0 items-center justify-between gap-2 border-b border-[#1c212b] bg-[#0f1217] px-2.5 text-[11px]">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-semibold tracking-wide text-slate-100">
-            {title}
-          </span>
+          <span className="font-medium text-[#e6e9ef]">{title}</span>
           {subtitle && (
-            <span className="truncate text-[11px] text-slate-400">
+            <span className="hidden md:inline truncate text-[10px] text-[#586070]">
               {subtitle}
             </span>
           )}
           {drawZoneMode && (
-            <span className="rounded bg-teal-500/20 px-1.5 py-0.5 text-[10px] font-medium text-teal-300 border border-teal-500/40">
-              DRAG TO DRAW ZONE
+            <span className="text-[10px] font-medium text-sky-400">
+              Drag to mark zone
             </span>
           )}
           {pickPriceMode && (
-            <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300 border border-amber-500/50 animate-pulse">
-              CLICK CHART TO SET {pickPriceMode.toUpperCase()}
+            <span className="text-[10px] font-semibold text-[#eab854]">
+              Click chart for {pickPriceMode.toUpperCase()}
             </span>
           )}
         </div>
-        {hoveredCandle && (
-          <div className="hidden sm:flex items-center gap-2.5 font-mono-num text-[11px] text-slate-300">
-            <span className="text-slate-500">
-              {formatPTTime(hoveredCandle.ts, true)} PT
-            </span>
-            <span>O {hoveredCandle.open.toFixed(2)}</span>
-            <span className="text-emerald-400">H {hoveredCandle.high.toFixed(2)}</span>
-            <span className="text-rose-400">L {hoveredCandle.low.toFixed(2)}</span>
-            <span
-              className={
-                hoveredCandle.close >= hoveredCandle.open
-                  ? "text-emerald-400 font-semibold"
-                  : "text-rose-400 font-semibold"
-              }
-            >
-              C {hoveredCandle.close.toFixed(2)}
-            </span>
-            <span className="text-slate-400">
-              V{" "}
-              {hoveredCandle.volume >= 10
-                ? hoveredCandle.volume.toFixed(0)
-                : hoveredCandle.volume.toFixed(2)}
-            </span>
-          </div>
-        )}
+        <div className="flex items-center gap-2.5">
+          {hoveredCandle && (
+            <div className="hidden sm:flex items-center gap-2 font-mono-num text-[10px] text-[#8b94a5]">
+              <span>O {hoveredCandle.open.toFixed(2)}</span>
+              <span className="text-[#00c087]">H {hoveredCandle.high.toFixed(2)}</span>
+              <span className="text-[#f6465d]">L {hoveredCandle.low.toFixed(2)}</span>
+              <span
+                className={
+                  hoveredCandle.close >= hoveredCandle.open
+                    ? "text-[#00c087] font-medium"
+                    : "text-[#f6465d] font-medium"
+                }
+              >
+                C {hoveredCandle.close.toFixed(2)}
+              </span>
+            </div>
+          )}
+          {headerRight}
+        </div>
       </div>
-      <div ref={containerRef} className={`relative w-full ${heightClass}`}>
+      <div ref={containerRef} className={`relative flex-1 w-full ${heightClass}`}>
         <canvas
           ref={canvasRef}
           className={`block h-full w-full ${

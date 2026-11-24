@@ -17,6 +17,7 @@ interface FootprintChartProps {
   onOpenCsvModal?: () => void;
   heightClass?: string;
   defaultVisibleBars?: number;
+  headerRight?: React.ReactNode;
 }
 
 function fmtVol(v: number): string {
@@ -38,8 +39,9 @@ export function FootprintChart({
   onModeChange,
   onSwitchToPaxg,
   onOpenCsvModal,
-  heightClass = "h-[365px]",
-  defaultVisibleBars = 9,
+  heightClass = "h-full min-h-[260px]",
+  defaultVisibleBars = 8,
+  headerRight,
 }: FootprintChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -80,12 +82,11 @@ export function FootprintChart({
     return bars.slice(start, end);
   }, [bars, visibleCount, rightOffset]);
 
-  // Shared geometry so canvas render and mouse hit-testing match identically
   const geom = useMemo(() => {
-    const padLeft = 48;
-    const padRight = 58;
-    const padTop = 22;
-    const statsRows = 6; // Delta, ΔStr%, MaxΔ, MinΔ, CVD, Vol
+    const padLeft = 44;
+    const padRight = 56;
+    const padTop = 20;
+    const statsRows = 5; // Delta, ΔStr%, MaxΔ/MinΔ -> Delta, ΔStr%, CVD, Vol, Trades
     const statsRowH = 14;
     const statsHeight = statsRows * statsRowH + 18;
     const plotW = Math.max(100, dims.width - padLeft - padRight);
@@ -101,7 +102,7 @@ export function FootprintChart({
     const minP = Number.isFinite(lo) ? quantize(lo) - priceStep : 3500;
     const maxP = Number.isFinite(hi) ? quantize(hi) + priceStep : 3510;
     const numPriceRows = Math.max(4, Math.round((maxP - minP) / priceStep) + 1);
-    const rowH = Math.max(10, Math.min(20, plotH / numPriceRows));
+    const rowH = Math.max(11, Math.min(20, plotH / numPriceRows));
     const colW = plotW / Math.max(1, visibleBars.length);
 
     return {
@@ -138,15 +139,15 @@ export function FootprintChart({
     canvas.height = dims.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    ctx.fillStyle = "#090d14";
+    ctx.fillStyle = "#0b0d11";
     ctx.fillRect(0, 0, dims.width, dims.height);
 
     if (visibleBars.length === 0) {
-      ctx.fillStyle = "#64748b";
-      ctx.font = "12px ui-monospace, monospace";
+      ctx.fillStyle = "#586070";
+      ctx.font = "11px ui-monospace, monospace";
       ctx.textAlign = "center";
       ctx.fillText(
-        "Step replay forward to populate Asia M5 footprint clusters",
+        "Step replay forward to populate M5 footprint clusters",
         dims.width / 2,
         dims.height / 2
       );
@@ -166,35 +167,50 @@ export function FootprintChart({
       rowH,
       colW,
     } = geom;
+    const axisX = dims.width - padRight;
 
-    // Zone highlights
-    for (const z of zones) {
-      const y1 = priceToY(z.high);
-      const y2 = priceToY(z.low) + rowH;
-      if (y2 < padTop || y1 > padTop + plotH) continue;
-      const isActive = z.id === activeZoneId;
-      ctx.fillStyle = isActive
-        ? "rgba(250, 204, 21, 0.14)"
-        : "rgba(148, 163, 184, 0.06)";
-      ctx.fillRect(padLeft, Math.max(padTop, y1), plotW, Math.min(plotH, y2 - y1));
+    // Axis hairlines
+    ctx.strokeStyle = "#171b24";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(axisX + 0.5, 0);
+    ctx.lineTo(axisX + 0.5, padTop + plotH);
+    ctx.moveTo(0, padTop + plotH + 0.5);
+    ctx.lineTo(dims.width, padTop + plotH + 0.5);
+    ctx.stroke();
+
+    // Active Zone band only (clean, zero clutter)
+    const activeZ = zones.find((z) => z.id === activeZoneId);
+    if (activeZ) {
+      const y1 = priceToY(activeZ.high);
+      const y2 = priceToY(activeZ.low) + rowH;
+      if (y2 >= padTop && y1 <= padTop + plotH) {
+        ctx.fillStyle = "rgba(212, 160, 58, 0.08)";
+        ctx.fillRect(
+          padLeft,
+          Math.max(padTop, y1),
+          plotW,
+          Math.min(plotH, y2 - y1)
+        );
+      }
     }
 
-    // Price Axis ticks
-    ctx.font = "9px ui-monospace, monospace";
+    // Price axis
+    ctx.font = "9.5px ui-monospace, monospace";
     ctx.textAlign = "left";
-    const priceLabelSkip = Math.max(1, Math.ceil(13 / rowH));
+    const priceLabelSkip = Math.max(1, Math.ceil(14 / rowH));
     for (let r = 0; r < numPriceRows; r += priceLabelSkip) {
       const p = Number((maxP - r * priceStep).toFixed(2));
       const y = priceToY(p);
       if (y < padTop - 4 || y > padTop + plotH) continue;
-      ctx.strokeStyle = "#121926";
+      ctx.strokeStyle = "#11151d";
       ctx.beginPath();
       ctx.moveTo(padLeft, y + rowH / 2);
-      ctx.lineTo(dims.width - padRight, y + rowH / 2);
+      ctx.lineTo(axisX, y + rowH / 2);
       ctx.stroke();
 
-      ctx.fillStyle = "#7c8aa5";
-      ctx.fillText(p.toFixed(2), dims.width - padRight + 5, y + rowH / 2 + 3);
+      ctx.fillStyle = "#626b7c";
+      ctx.fillText(p.toFixed(2), axisX + 6, y + rowH / 2 + 3);
     }
 
     const maxCellVol = Math.max(
@@ -204,37 +220,36 @@ export function FootprintChart({
 
     visibleBars.forEach((bar, idx) => {
       const colX = padLeft + idx * colW;
-      const innerW = colW - 4;
+      const innerW = colW - 6;
       const barCenter = colX + colW / 2;
 
-      // Highlight hovered bar column
       if (hoverInfo && hoverInfo.colIdx === idx) {
-        ctx.fillStyle = "rgba(56, 189, 248, 0.06)";
+        ctx.fillStyle = "rgba(230, 233, 239, 0.035)";
         ctx.fillRect(colX, padTop, colW, plotH + statsRows * statsRowH);
       }
 
-      // Top signal flags
-      const tags: Array<{ t: string; c: string }> = [];
-      if (bar.absorptionLow) tags.push({ t: "ABS↓", c: "#22c55e" });
-      if (bar.absorptionHigh) tags.push({ t: "ABS↑", c: "#f43f5e" });
-      if (bar.aggressionFlipBull) tags.push({ t: "FLIP↑", c: "#38bdf8" });
-      if (bar.aggressionFlipBear) tags.push({ t: "FLIP↓", c: "#fb923c" });
-      if (bar.exhaustionLow || bar.exhaustionHigh) tags.push({ t: "EXH", c: "#a78bfa" });
-      if (bar.cvdDivergenceBull || bar.cvdDivergenceBear) tags.push({ t: "DIV", c: "#facc15" });
+      // Top signal badge (clean single highest-priority flag)
+      let tag: { t: string; c: string } | null = null;
+      if (bar.aggressionFlipBull) tag = { t: "FLIP↑", c: "#00c087" };
+      else if (bar.aggressionFlipBear) tag = { t: "FLIP↓", c: "#f6465d" };
+      else if (bar.absorptionLow) tag = { t: "ABS↓", c: "#d4a03a" };
+      else if (bar.absorptionHigh) tag = { t: "ABS↑", c: "#d4a03a" };
+      else if (bar.cvdDivergenceBull || bar.cvdDivergenceBear) tag = { t: "DIV", c: "#93c5fd" };
+      else if (bar.exhaustionLow || bar.exhaustionHigh) tag = { t: "EXH", c: "#8b94a5" };
 
-      if (tags.length > 0) {
-        ctx.font = "bold 8px ui-monospace, monospace";
+      if (tag) {
+        ctx.font = "600 8.5px ui-monospace, monospace";
         ctx.textAlign = "center";
-        ctx.fillStyle = tags[0].c;
-        ctx.fillText(tags.slice(0, 2).map((x) => x.t).join(" "), barCenter, 14);
+        ctx.fillStyle = tag.c;
+        ctx.fillText(tag.t, barCenter, 13);
       }
 
-      // Open-close candle spine
+      // Slim candle body indicator on far left of cluster
       const spineX = colX + 3;
       const yO = priceToY(bar.open) + rowH / 2;
       const yC = priceToY(bar.close) + rowH / 2;
-      ctx.fillStyle = bar.close >= bar.open ? "#10b981" : "#ef4444";
-      ctx.fillRect(spineX, Math.min(yO, yC), 3, Math.max(2, Math.abs(yC - yO)));
+      ctx.fillStyle = bar.close >= bar.open ? "#00c087" : "#f6465d";
+      ctx.fillRect(spineX, Math.min(yO, yC), 2.5, Math.max(2, Math.abs(yC - yO)));
 
       for (const row of bar.rows) {
         const ry = priceToY(row.price);
@@ -245,68 +260,68 @@ export function FootprintChart({
 
         if (mode === "bid_ask") {
           const halfW = (innerW - 7) / 2;
-          const cellX = colX + 7;
+          const cellX = colX + 8;
+
+          // Proportional subtle horizontal bars growing outward from center spine (Exocharts look)
+          const bidBarW = Math.max(2, (row.bidVol / maxCellVol) * halfW);
+          const askBarW = Math.max(2, (row.askVol / maxCellVol) * halfW);
 
           ctx.fillStyle = row.bidImbalance
-            ? "rgba(239, 68, 68, 0.55)"
-            : `rgba(239, 68, 68, ${(0.06 + intensity * 0.24).toFixed(2)})`;
-          ctx.fillRect(cellX, ry, halfW, Math.max(9, rowH - 1));
+            ? "rgba(246, 70, 93, 0.38)"
+            : `rgba(246, 70, 93, ${(0.08 + intensity * 0.18).toFixed(2)})`;
+          ctx.fillRect(cellX + halfW - bidBarW, ry + 0.5, bidBarW, Math.max(9, rowH - 1.5));
 
           ctx.fillStyle = row.askImbalance
-            ? "rgba(16, 185, 129, 0.55)"
-            : `rgba(16, 185, 129, ${(0.06 + intensity * 0.24).toFixed(2)})`;
-          ctx.fillRect(cellX + halfW + 1, ry, halfW, Math.max(9, rowH - 1));
+            ? "rgba(0, 192, 135, 0.38)"
+            : `rgba(0, 192, 135, ${(0.08 + intensity * 0.18).toFixed(2)})`;
+          ctx.fillRect(cellX + halfW + 1, ry + 0.5, askBarW, Math.max(9, rowH - 1.5));
 
           if (isHoveredCell) {
-            ctx.strokeStyle = "#ffffff";
-            ctx.lineWidth = 1.4;
-            ctx.strokeRect(cellX, ry, innerW - 6, Math.max(9, rowH - 1));
-          } else if (row.isPoc) {
-            ctx.strokeStyle = "#facc15";
-            ctx.lineWidth = 1.2;
-            ctx.strokeRect(cellX, ry, innerW - 6, Math.max(9, rowH - 1));
-          } else if (row.isAbsorptionCell) {
-            ctx.strokeStyle = "#38bdf8";
+            ctx.strokeStyle = "#e6e9ef";
             ctx.lineWidth = 1;
-            ctx.strokeRect(cellX, ry, innerW - 6, Math.max(9, rowH - 1));
+            ctx.strokeRect(cellX, ry + 0.5, innerW - 6, Math.max(9, rowH - 1.5));
+          } else if (row.isPoc) {
+            ctx.strokeStyle = "#d4a03a";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(cellX, ry + 0.5, innerW - 6, Math.max(9, rowH - 1.5));
           }
 
           if (colW >= 54 && rowH >= 10) {
             ctx.font =
               row.bidImbalance || row.askImbalance
-                ? "bold 9px ui-monospace, monospace"
-                : "9px ui-monospace, monospace";
+                ? "700 9px ui-monospace, monospace"
+                : "400 9px ui-monospace, monospace";
             ctx.textAlign = "right";
-            ctx.fillStyle = row.bidImbalance ? "#fecdd3" : "#cbd5e1";
-            ctx.fillText(fmtVol(row.bidVol), cellX + halfW - 2, ry + Math.min(rowH - 2, 10));
+            ctx.fillStyle = row.bidImbalance ? "#ff8fa0" : "#9aa3b2";
+            ctx.fillText(fmtVol(row.bidVol), cellX + halfW - 2.5, ry + Math.min(rowH - 2, 10));
 
             ctx.textAlign = "left";
-            ctx.fillStyle = row.askImbalance ? "#bbf7d0" : "#cbd5e1";
-            ctx.fillText(fmtVol(row.askVol), cellX + halfW + 3, ry + Math.min(rowH - 2, 10));
+            ctx.fillStyle = row.askImbalance ? "#5ef2c2" : "#9aa3b2";
+            ctx.fillText(fmtVol(row.askVol), cellX + halfW + 3.5, ry + Math.min(rowH - 2, 10));
           }
         } else {
-          const cellX = colX + 7;
+          const cellX = colX + 8;
           const cellW = innerW - 6;
           const isPos = row.delta >= 0;
           ctx.fillStyle = isPos
-            ? `rgba(16, 185, 129, ${(0.12 + intensity * 0.55).toFixed(2)})`
-            : `rgba(239, 68, 68, ${(0.12 + intensity * 0.55).toFixed(2)})`;
-          ctx.fillRect(cellX, ry, cellW, Math.max(9, rowH - 1));
+            ? `rgba(0, 192, 135, ${(0.1 + intensity * 0.42).toFixed(2)})`
+            : `rgba(246, 70, 93, ${(0.1 + intensity * 0.42).toFixed(2)})`;
+          ctx.fillRect(cellX, ry + 0.5, cellW, Math.max(9, rowH - 1.5));
 
           if (isHoveredCell) {
-            ctx.strokeStyle = "#ffffff";
-            ctx.lineWidth = 1.4;
-            ctx.strokeRect(cellX, ry, cellW, Math.max(9, rowH - 1));
+            ctx.strokeStyle = "#e6e9ef";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(cellX, ry + 0.5, cellW, Math.max(9, rowH - 1.5));
           } else if (row.isPoc) {
-            ctx.strokeStyle = "#facc15";
-            ctx.lineWidth = 1.2;
-            ctx.strokeRect(cellX, ry, cellW, Math.max(9, rowH - 1));
+            ctx.strokeStyle = "#d4a03a";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(cellX, ry + 0.5, cellW, Math.max(9, rowH - 1.5));
           }
 
           if (colW >= 42 && rowH >= 10) {
-            ctx.font = "9px ui-monospace, monospace";
+            ctx.font = "500 9px ui-monospace, monospace";
             ctx.textAlign = "center";
-            ctx.fillStyle = "#f8fafc";
+            ctx.fillStyle = "#e6e9ef";
             const sign = row.delta > 0 ? "+" : "";
             ctx.fillText(
               `${sign}${fmtVol(row.delta)}`,
@@ -318,14 +333,14 @@ export function FootprintChart({
       }
 
       // Column divider
-      ctx.strokeStyle = "#161e2e";
+      ctx.strokeStyle = "#141820";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(colX, padTop);
-      ctx.lineTo(colX, dims.height - 16);
+      ctx.moveTo(Math.round(colX) + 0.5, padTop);
+      ctx.lineTo(Math.round(colX) + 0.5, dims.height - 16);
       ctx.stroke();
 
-      // ClusterStatistic + DeltaStrength footer rows
+      // ClusterStatistic table footer
       const statsTop = padTop + plotH + 2;
       const cells = [
         { val: bar.delta, text: (bar.delta > 0 ? "+" : "") + fmtVol(bar.delta), colorize: true },
@@ -334,44 +349,43 @@ export function FootprintChart({
           text: `${bar.deltaStrengthPct > 0 ? "+" : ""}${Math.round(bar.deltaStrengthPct)}%`,
           colorize: true,
         },
-        { val: bar.maxDelta, text: "+" + fmtVol(Math.max(0, bar.maxDelta)), colorize: false },
-        { val: bar.minDelta, text: fmtVol(Math.min(0, bar.minDelta)), colorize: false },
         { val: bar.cumDelta, text: (bar.cumDelta > 0 ? "+" : "") + fmtVol(bar.cumDelta), colorize: true },
         { val: bar.totalVol, text: fmtVol(bar.totalVol), colorize: false },
+        { val: bar.tradeCount, text: String(bar.tradeCount), colorize: false },
       ];
 
       cells.forEach((cell, rIdx) => {
         const y = statsTop + rIdx * statsRowH;
         if (cell.colorize) {
           ctx.fillStyle =
-            cell.val >= 0 ? "rgba(16, 185, 129, 0.16)" : "rgba(239, 68, 68, 0.16)";
+            cell.val >= 0 ? "rgba(0, 192, 135, 0.11)" : "rgba(246, 70, 93, 0.11)";
           ctx.fillRect(colX + 1, y, colW - 2, statsRowH - 1);
         }
         ctx.fillStyle = cell.colorize
           ? cell.val >= 0
-            ? "#34d399"
-            : "#fb7185"
-          : "#94a3b8";
+            ? "#00c087"
+            : "#f6465d"
+          : "#7d8594";
         ctx.font = "9px ui-monospace, monospace";
         ctx.textAlign = "center";
         ctx.fillText(cell.text, barCenter, y + 10);
       });
 
-      ctx.fillStyle = "#64748b";
+      ctx.fillStyle = "#586070";
       ctx.font = "9px ui-monospace, monospace";
       ctx.textAlign = "center";
       ctx.fillText(formatPTTime(bar.ts), barCenter, dims.height - 4);
     });
 
-    // Left ClusterStatistic row labels
+    // Left ClusterStatistic labels
     const statsTop = padTop + plotH + 2;
-    const labels = ["Delta", "ΔStr%", "MaxΔ", "MinΔ", "CVD", "Vol"];
-    ctx.fillStyle = "#0b0f18";
-    ctx.fillRect(0, statsTop, padLeft - 2, statsRows * statsRowH);
-    ctx.font = "bold 9px ui-monospace, monospace";
+    const labels = ["Delta", "ΔStr", "CVD", "Vol", "Trds"];
+    ctx.fillStyle = "#0e1116";
+    ctx.fillRect(0, statsTop, padLeft - 1, statsRows * statsRowH);
+    ctx.font = "500 9px ui-monospace, monospace";
     ctx.textAlign = "left";
     labels.forEach((lbl, rIdx) => {
-      ctx.fillStyle = "#94a3b8";
+      ctx.fillStyle = "#626b7c";
       ctx.fillText(lbl, 6, statsTop + rIdx * statsRowH + 10);
     });
   }, [dims, visibleBars, hasRealAggressorTape, zones, activeZoneId, priceStep, mode, geom, hoverInfo]);
@@ -407,88 +421,71 @@ export function FootprintChart({
   };
 
   return (
-    <div className="flex flex-col rounded-lg border border-[#1c2436] bg-[#090d14] overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1c2436] bg-[#0c111b] px-3 py-1.5 text-xs">
+    <div className="flex flex-col bg-[#0b0d11] overflow-hidden h-full">
+      <div className="flex h-7 shrink-0 items-center justify-between gap-2 border-b border-[#1c212b] bg-[#0f1217] px-2.5 text-[11px]">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-semibold tracking-wide text-slate-100">
-            {title ?? `M5 Footprint (${mode === "bid_ask" ? "Bid × Ask" : "Delta"})`}
+          <span className="font-medium text-[#e6e9ef]">
+            {title ?? `M5 Footprint · ${mode === "bid_ask" ? "Bid × Ask" : "Delta"}`}
           </span>
           {hoverInfo ? (
-            <div className="flex items-center gap-2 font-mono-num text-[10px] text-slate-300 truncate">
-              <span className="text-sky-300">
-                {formatPTTime(hoverInfo.bar.ts)} PT
-              </span>
+            <div className="hidden md:flex items-center gap-2 font-mono-num text-[10px] text-[#8b94a5] truncate">
+              <span>{formatPTTime(hoverInfo.bar.ts)}</span>
               {hoverInfo.row && (
                 <>
-                  <span className="text-amber-300">
-                    ${hoverInfo.row.price.toFixed(2)}
-                  </span>
-                  <span className="text-rose-300">
-                    Bid {fmtVol(hoverInfo.row.bidVol)}
-                  </span>
-                  <span className="text-emerald-300">
-                    Ask {fmtVol(hoverInfo.row.askVol)}
-                  </span>
-                  <span>
-                    Δ {hoverInfo.row.delta > 0 ? "+" : ""}
-                    {fmtVol(hoverInfo.row.delta)}
-                  </span>
+                  <span className="text-[#d4a03a]">${hoverInfo.row.price.toFixed(2)}</span>
+                  <span className="text-[#f6465d]">B {fmtVol(hoverInfo.row.bidVol)}</span>
+                  <span className="text-[#00c087]">A {fmtVol(hoverInfo.row.askVol)}</span>
                 </>
               )}
-              <span className="text-slate-400">
-                {hoverInfo.bar.tradeCount} prints · ΔStr{" "}
-                {hoverInfo.bar.deltaStrengthPct > 0 ? "+" : ""}
-                {hoverInfo.bar.deltaStrengthPct}%
-              </span>
+              <span>ΔStr {hoverInfo.bar.deltaStrengthPct > 0 ? "+" : ""}{hoverInfo.bar.deltaStrengthPct}%</span>
             </div>
           ) : (
-            <span className="text-[10px] font-mono-num text-slate-400">
-              300% Imb · Step ${priceStep.toFixed(2)} · Hover cells to inspect
+            <span className="hidden md:inline font-mono-num text-[10px] text-[#586070]">
+              300% Imb · ${priceStep.toFixed(2)}
             </span>
           )}
         </div>
         <div className="flex items-center gap-1">
+          {headerRight}
           {onModeChange && (
-            <>
+            <div className="flex items-center rounded bg-[#151922] p-0.5 text-[10px]">
               <button
                 type="button"
                 onClick={() => onModeChange("bid_ask")}
-                className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+                className={`rounded-xs px-1.5 py-0.5 transition ${
                   mode === "bid_ask"
-                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
-                    : "text-slate-400 hover:text-slate-200"
+                    ? "bg-[#252c3a] text-[#e6e9ef] font-medium"
+                    : "text-[#6e7787] hover:text-[#b4bccb]"
                 }`}
               >
-                Bid × Ask
+                Bid×Ask
               </button>
               <button
                 type="button"
                 onClick={() => onModeChange("delta")}
-                className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+                className={`rounded-xs px-1.5 py-0.5 transition ${
                   mode === "delta"
-                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
-                    : "text-slate-400 hover:text-slate-200"
+                    ? "bg-[#252c3a] text-[#e6e9ef] font-medium"
+                    : "text-[#6e7787] hover:text-[#b4bccb]"
                 }`}
               >
                 Delta
               </button>
-            </>
+            </div>
           )}
           {hasRealAggressorTape && (
-            <div className="ml-1 flex items-center gap-0.5 border-l border-[#1c2436] pl-1.5">
+            <div className="flex items-center gap-0.5 pl-1 text-[10px]">
               <button
                 type="button"
-                title="Zoom in (fewer bars)"
                 onClick={() => setVisibleCount((c) => Math.max(4, c - 2))}
-                className="rounded bg-[#141c2c] px-1.5 py-0.5 text-[11px] text-slate-300 hover:bg-[#1e2a40]"
+                className="rounded px-1.5 py-0.5 text-[#8b94a5] hover:bg-[#1b212d] hover:text-[#e6e9ef]"
               >
                 +
               </button>
               <button
                 type="button"
-                title="Zoom out (more bars)"
                 onClick={() => setVisibleCount((c) => Math.min(18, c + 2))}
-                className="rounded bg-[#141c2c] px-1.5 py-0.5 text-[11px] text-slate-300 hover:bg-[#1e2a40]"
+                className="rounded px-1.5 py-0.5 text-[#8b94a5] hover:bg-[#1b212d] hover:text-[#e6e9ef]"
               >
                 -
               </button>
@@ -497,35 +494,34 @@ export function FootprintChart({
         </div>
       </div>
 
-      <div ref={containerRef} className={`relative w-full ${heightClass}`}>
+      <div ref={containerRef} className={`relative flex-1 w-full ${heightClass}`}>
         {!hasRealAggressorTape ? (
           <div className="flex h-full flex-col items-center justify-center p-6 text-center">
-            <div className="max-w-md rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
-              <div className="text-xs font-semibold uppercase tracking-wider text-amber-300">
+            <div className="max-w-sm border border-[#262d3b] bg-[#0f1217] p-4 rounded-md">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[#d4a03a]">
                 No Real Bid/Ask Aggressor Tape in OHLCV Feed
               </div>
-              <p className="mt-2 text-xs leading-relaxed text-slate-300">
-                COMEX GC=F from Yahoo Finance gives real candles and volume
-                profile levels, but zero trade-by-trade aggressor side. We do
-                not fake footprint numbers from candle closes.
+              <p className="mt-1.5 text-[11px] leading-relaxed text-[#8b94a5]">
+                COMEX GC=F gives real candles and profiles, zero tick-level bid/ask side.
+                Footprint stays blank instead of fabricating fake numbers.
               </p>
-              <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              <div className="mt-3 flex items-center justify-center gap-2">
                 {onSwitchToPaxg && (
                   <button
                     type="button"
                     onClick={onSwitchToPaxg}
-                    className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
+                    className="rounded bg-[#e6e9ef] px-2.5 py-1 text-[11px] font-medium text-[#0b0d11] hover:bg-white"
                   >
-                    Switch to Kraken PAXG/USD Real Tape
+                    Use PAXG Real Tape
                   </button>
                 )}
                 {onOpenCsvModal && (
                   <button
                     type="button"
                     onClick={onOpenCsvModal}
-                    className="rounded border border-slate-600 bg-[#141c2c] px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-[#1d283d]"
+                    className="rounded border border-[#2d3546] bg-[#151922] px-2.5 py-1 text-[11px] text-[#e6e9ef] hover:bg-[#1e2431]"
                   >
-                    Upload Databento GC CSV
+                    Import Databento CSV
                   </button>
                 )}
               </div>

@@ -11,22 +11,15 @@ interface HeatmapChartProps {
   heightClass?: string;
 }
 
-/**
- * Optional L2 Depth-of-Market Heatmap (Priority #5 in Asia Value Model; off by default).
- * Renders real resting orderbook depth bands ONLY from:
- * 1) Uploaded Databento GLBX.MDP3 mbp-10 CSV snapshots, OR
- * 2) User-started live Kraken PAXG/USD real L2 depth recorder.
- * Never fabricates resting liquidity from OHLCV.
- */
 export function HeatmapChart({
   l2Snapshots,
   ticks,
   onOpenCsvModal,
-  heightClass = "h-[240px]",
+  heightClass = "h-[220px]",
 }: HeatmapChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [dims, setDims] = useState({ width: 560, height: 240 });
+  const [dims, setDims] = useState({ width: 560, height: 220 });
   const [liveRecording, setLiveRecording] = useState(false);
   const [liveSnapshots, setLiveSnapshots] = useState<L2Snapshot[]>([]);
   const [liveError, setLiveError] = useState<string | null>(null);
@@ -44,7 +37,6 @@ export function HeatmapChart({
     return () => obs.disconnect();
   }, []);
 
-  // Optional live Kraken PAXG/USD real L2 recorder (polls every 3s while toggled on)
   useEffect(() => {
     if (!liveRecording) return;
     let active = true;
@@ -86,16 +78,16 @@ export function HeatmapChart({
     canvas.height = dims.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    ctx.fillStyle = "#070a10";
+    ctx.fillStyle = "#0b0d11";
     ctx.fillRect(0, 0, dims.width, dims.height);
 
     const padL = 8;
-    const padR = 62;
-    const padT = 10;
+    const padR = 60;
+    const padT = 8;
     const padB = 18;
-    const plotW = Math.max(80, dims.width - padL - padR - 46); // leave right 46px for current DOM ladder
+    const plotW = Math.max(80, dims.width - padL - padR - 44);
     const domX = padL + plotW + 4;
-    const domW = 42;
+    const domW = 40;
     const plotH = Math.max(60, dims.height - padT - padB);
 
     const slice = activeSnapshots.slice(-100);
@@ -118,37 +110,32 @@ export function HeatmapChart({
     if (!Number.isFinite(minP) || maxSize <= 0) return;
     const span = Math.max(0.5, maxP - minP);
     const priceToY = (p: number) => padT + ((maxP - p) / span) * plotH;
-
     const colW = Math.max(2, plotW / Math.max(1, slice.length));
 
-    // Render resting orderbook liquidity heat columns
     slice.forEach((snap, idx) => {
       const x = padL + idx * colW;
       for (const b of snap.bids) {
         const y = priceToY(b.price);
         const norm = Math.min(1, b.size / maxSize);
-        // Deep blue -> cyan -> bright gold for heavy resting bid walls
-        const r = Math.round(norm > 0.6 ? 245 * norm : 15);
-        const g = Math.round(80 + 170 * norm);
-        const bl = Math.round(norm > 0.7 ? 70 : 195);
-        ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, ${(0.18 + norm * 0.78).toFixed(2)})`;
+        const r = Math.round(norm > 0.65 ? 212 * norm : 12);
+        const g = Math.round(75 + 150 * norm);
+        const bl = Math.round(norm > 0.7 ? 58 : 170);
+        ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, ${(0.16 + norm * 0.78).toFixed(2)})`;
         ctx.fillRect(x, y - 2, colW + 0.5, 4);
       }
       for (const a of snap.asks) {
         const y = priceToY(a.price);
         const norm = Math.min(1, a.size / maxSize);
-        // Deep violet -> orange -> hot amber for heavy resting ask walls
-        const r = Math.round(140 + 115 * norm);
-        const g = Math.round(norm > 0.55 ? 160 * norm : 45);
-        const bl = Math.round(norm > 0.55 ? 40 : 150);
-        ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, ${(0.18 + norm * 0.78).toFixed(2)})`;
+        const r = Math.round(135 + 115 * norm);
+        const g = Math.round(norm > 0.55 ? 140 * norm : 40);
+        const bl = Math.round(norm > 0.55 ? 40 : 120);
+        ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, ${(0.16 + norm * 0.78).toFixed(2)})`;
         ctx.fillRect(x, y - 2, colW + 0.5, 4);
       }
     });
 
-    // Draw best bid & best ask lines across snapshots
-    ctx.strokeStyle = "#34d399";
-    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = "#00c087";
+    ctx.lineWidth = 1.1;
     ctx.beginPath();
     slice.forEach((s, idx) => {
       const bb = s.bids[0]?.price;
@@ -160,8 +147,8 @@ export function HeatmapChart({
     });
     ctx.stroke();
 
-    ctx.strokeStyle = "#fb7185";
-    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = "#f6465d";
+    ctx.lineWidth = 1.1;
     ctx.beginPath();
     slice.forEach((s, idx) => {
       const ba = s.asks[0]?.price;
@@ -173,7 +160,6 @@ export function HeatmapChart({
     });
     ctx.stroke();
 
-    // Overlay real trade bubbles if ticks overlap snapshot time window
     const startTs = slice[0].ts;
     const endTs = slice[slice.length - 1].ts;
     if (!usingLive && ticks.length > 0 && endTs > startTs) {
@@ -184,93 +170,77 @@ export function HeatmapChart({
         const cx = padL + frac * plotW;
         const cy = priceToY(t.price);
         if (cy < padT || cy > padT + plotH) continue;
-        const rad = 2 + Math.min(8, (t.size / maxTickSz) * 8);
+        const rad = 2 + Math.min(7, (t.size / maxTickSz) * 7);
         ctx.beginPath();
         ctx.arc(cx, cy, rad, 0, Math.PI * 2);
         ctx.fillStyle =
-          t.side === "buy"
-            ? "rgba(34, 197, 94, 0.58)"
-            : "rgba(244, 63, 94, 0.58)";
+          t.side === "buy" ? "rgba(0, 192, 135, 0.55)" : "rgba(246, 70, 93, 0.55)";
         ctx.fill();
       }
     }
 
-    // Right-side Current DOM Bars (latest snapshot resting sizes)
     const latest = slice[slice.length - 1];
-    ctx.fillStyle = "#0b0f18";
+    ctx.fillStyle = "#0f1217";
     ctx.fillRect(domX, padT, domW, plotH);
     for (const b of latest.bids) {
       const y = priceToY(b.price);
       const w = Math.max(2, (b.size / maxSize) * (domW - 2));
-      ctx.fillStyle = "rgba(16, 185, 129, 0.65)";
+      ctx.fillStyle = "rgba(0, 192, 135, 0.65)";
       ctx.fillRect(domX, y - 2, w, 4);
     }
     for (const a of latest.asks) {
       const y = priceToY(a.price);
       const w = Math.max(2, (a.size / maxSize) * (domW - 2));
-      ctx.fillStyle = "rgba(244, 63, 94, 0.65)";
+      ctx.fillStyle = "rgba(246, 70, 93, 0.65)";
       ctx.fillRect(domX, y - 2, w, 4);
     }
 
-    // Price Axis
     ctx.font = "9px ui-monospace, monospace";
-    ctx.fillStyle = "#7c8aa5";
+    ctx.fillStyle = "#626b7c";
     ctx.textAlign = "left";
     for (let i = 0; i <= 5; i++) {
       const p = maxP - (i / 5) * span;
-      const y = priceToY(p);
-      ctx.fillText(p.toFixed(2), dims.width - padR + 4, y + 3);
+      ctx.fillText(p.toFixed(2), dims.width - padR + 5, priceToY(p) + 3);
     }
-
-    // Time ticks
-    ctx.fillStyle = "#64748b";
+    ctx.fillStyle = "#586070";
     ctx.fillText(formatPTTime(slice[0].ts), padL, dims.height - 4);
-    ctx.fillText(
-      formatPTTime(slice[slice.length - 1].ts),
-      padL + plotW - 32,
-      dims.height - 4
-    );
+    ctx.fillText(formatPTTime(slice[slice.length - 1].ts), padL + plotW - 32, dims.height - 4);
   }, [dims, activeSnapshots, ticks, usingLive]);
 
   return (
-    <div className="flex flex-col rounded-lg border border-[#1c2436] bg-[#090d14] overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1c2436] bg-[#0c111b] px-3 py-1.5 text-xs">
+    <div className="flex flex-col bg-[#0b0d11] border-t border-[#1c212b] overflow-hidden">
+      <div className="flex h-7 items-center justify-between gap-2 border-b border-[#1c212b] bg-[#0f1217] px-2.5 text-[11px]">
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-slate-100">
-            L2 Orderbook Heatmap & DOM
-          </span>
-          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
-            Optional · Priority #5
-          </span>
+          <span className="font-medium text-[#e6e9ef]">L2 Orderbook Heatmap &amp; DOM</span>
           {usingLive && (
-            <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-300 border border-emerald-500/40">
-              LIVE KRAKEN PAXG L2 ({liveSnapshots.length} frames)
+            <span className="font-mono-num text-[10px] text-[#00c087]">
+              LIVE KRAKEN PAXG L2 ({liveSnapshots.length})
             </span>
           )}
           {l2Snapshots.length > 0 && (
-            <span className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] text-sky-300 border border-sky-500/40">
-              REAL MBP-10 ({l2Snapshots.length} frames)
+            <span className="font-mono-num text-[10px] text-[#d4a03a]">
+              REAL MBP-10 ({l2Snapshots.length})
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 text-[10px]">
           {l2Snapshots.length === 0 && (
             <button
               type="button"
               onClick={() => setLiveRecording((v) => !v)}
-              className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+              className={`rounded px-2 py-0.5 transition ${
                 liveRecording
-                  ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
-                  : "bg-[#141c2c] text-slate-300 border border-slate-700 hover:bg-[#1c273d]"
+                  ? "bg-[#f6465d]/20 text-[#f6465d]"
+                  : "bg-[#171c26] text-[#c8cfdc] hover:bg-[#222938]"
               }`}
             >
-              {liveRecording ? "Stop Live L2 Capture" : "Record Live Kraken L2"}
+              {liveRecording ? "Stop Live L2" : "Record Live Kraken L2"}
             </button>
           )}
           <button
             type="button"
             onClick={onOpenCsvModal}
-            className="rounded bg-[#141c2c] px-2 py-0.5 text-[11px] text-slate-300 border border-slate-700 hover:bg-[#1c273d]"
+            className="rounded bg-[#171c26] px-2 py-0.5 text-[#c8cfdc] hover:bg-[#222938]"
           >
             Upload MBP-10 CSV
           </button>
@@ -279,22 +249,13 @@ export function HeatmapChart({
 
       <div ref={containerRef} className={`relative w-full ${heightClass}`}>
         {activeSnapshots.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center p-5 text-center">
-            <div className="max-w-lg rounded-lg border border-slate-700/70 bg-[#0d121d] p-4">
-              <div className="text-xs font-semibold text-slate-200">
-                No Historical Level 2 Orderbook Loaded
-              </div>
-              <p className="mt-1.5 text-xs text-slate-400 leading-relaxed">
-                Asia Value Model reads absorption from Volume Profile + M5
-                Footprint + CVD (executed trades beat resting orders). Heatmap is
-                ready whenever you drop a Databento{" "}
-                <code className="text-sky-300">GLBX.MDP3 mbp-10</code> CSV, or
-                click <strong className="text-slate-200">Record Live Kraken L2</strong>{" "}
-                above to watch real live gold depth walls stream in.
-              </p>
-              {liveError && (
-                <p className="mt-2 text-[11px] text-rose-400">{liveError}</p>
-              )}
+          <div className="flex h-full items-center justify-center p-4 text-center text-[11px] text-[#7d8594]">
+            <div className="max-w-md">
+              No L2 depth loaded (model priority #5; optional). Upload a Databento{" "}
+              <code className="text-[#c8cfdc]">mbp-10</code> CSV or click{" "}
+              <span className="text-[#e6e9ef] font-medium">Record Live Kraken L2</span>{" "}
+              to stream real gold orderbook depth.
+              {liveError && <div className="mt-1 text-[#f6465d]">{liveError}</div>}
             </div>
           </div>
         ) : (
