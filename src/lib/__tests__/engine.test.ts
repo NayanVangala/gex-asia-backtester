@@ -3,13 +3,15 @@ import {
   calculatePositionSizing,
   evaluateAcceptanceRejection,
   evaluateEntryGuardrails,
+  evaluatePendingOrderOnBar,
+  gradeDrillCall,
   roundGCForContract,
 } from "../goldMath";
 import { buildVolumeProfile, computeAllSessionProfiles } from "../volumeProfile";
 import { buildFootprintsFromTicks } from "../footprint";
 import { parseMarketDataCSV } from "../parsers";
-import { computeJournalStats } from "../journal";
-import { Candle, PremarketPlan, SimRepLog, Tick } from "../types";
+import { computeJournalStats, exportGoogleSheetTSV } from "../journal";
+import { Candle, DrillCall, PendingOrder, PremarketPlan, SimRepLog, Tick } from "../types";
 
 describe("1OZ / MGC / GC contract math & outward stop rounding", () => {
   it("rounds GC prices onto 1OZ $0.25 grid with outward stop buffer", () => {
@@ -301,5 +303,86 @@ describe("Early-Entry Guardrail & Sim Rep Journal stats", () => {
     expect(stats.firstTouchCount).toBe(1);
     expect(stats.firstValidPullbackCount).toBe(1);
     expect(stats.totalR).toBe(1.2);
+
+    const tsv = exportGoogleSheetTSV(reps);
+    expect(tsv).toContain("1OZ Net $ ($1/pt)");
+    expect(tsv).toContain("#5\tModel 1");
+  });
+});
+
+describe("Section 8 Working Stop/Limit Orders & Blind Drill Grading", () => {
+  const baseOrder: PendingOrder = {
+    id: "ord-1",
+    side: "long",
+    orderType: "stop",
+    model: "model1_reversal",
+    scenario: 5,
+    setupTag: "pd_poc_bounce",
+    contract: "1OZ",
+    triggerPriceExec: 4394.0,
+    invalidationPriceExec: 4389.75,
+    stopPriceGC: 4389.9,
+    stopPriceExec: 4389.75,
+    t1PriceExec: 4407.0,
+    t2PriceExec: 4421.5,
+    contracts: 1,
+    riskDollars: 5.75,
+    commissionDollars: 1.5,
+    placedAtTs: 1000,
+    entryTiming: "first_valid_pullback",
+    warnings: [],
+    note: "Buy stop above pullback bar",
+  };
+
+  it("auto-cancels working Buy Stop if absorption low breaks before fill", () => {
+    const res = evaluatePendingOrderOnBar(baseOrder, {
+      ts: 2000,
+      open: 4392.0,
+      high: 4393.0,
+      low: 4389.5,
+      close: 4389.6,
+      volume: 40,
+    });
+    expect(res.action).toBe("cancelled_invalidated");
+  });
+
+  it("fills working Buy Stop and logs slippage on wide trigger bar", () => {
+    const res = evaluatePendingOrderOnBar(baseOrder, {
+      ts: 2000,
+      open: 4393.0,
+      high: 4397.5,
+      low: 4392.5,
+      close: 4396.5,
+      volume: 65,
+    });
+    expect(res.action).toBe("filled");
+    expect(res.fillPriceExec).toBe(4394.25);
+    expect(res.slippagePts).toBe(0.25);
+  });
+
+  it("grades Blind Drill Mode call accurately after 6 M5 bars", () => {
+    const call: DrillCall = {
+      id: "d1",
+      calledAtTs: 1_760_000_000_000,
+      zoneId: "z1",
+      zoneLabel: "PD VAH",
+      zoneLow: 4420.5,
+      zoneHigh: 4421.6,
+      predictedCall: "model2_continuation",
+      scenario: 3,
+      reason: "Expect acceptance above PD VAH",
+    };
+    const bars: Candle[] = Array.from({ length: 6 }, (_, i) => ({
+      ts: 1_760_000_000_000 + i * 300_000,
+      open: 4422 + i * 0.4,
+      high: 4423 + i * 0.4,
+      low: 4421.8 + i * 0.3,
+      close: 4422.5 + i * 0.4,
+      volume: 50,
+    }));
+    const graded = gradeDrillCall(call, bars);
+    expect(graded).not.toBeNull();
+    expect(graded!.actualStatus).toBe("acceptance");
+    expect(graded!.correct).toBe(true);
   });
 });

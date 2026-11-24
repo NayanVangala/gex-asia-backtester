@@ -100,12 +100,14 @@ async function fetchKrakenTradesRange(
 
 export async function GET(req: NextRequest) {
   try {
-    const availableSessions = listRecentAsiaDates(18, true);
+    // Prefer Mon-Thu weekday Asia sessions by default (higher volume/cleaner tape than thin Sunday)
+    const weekdaySessions = listRecentAsiaDates(16, false, true);
+    const allSessions = listRecentAsiaDates(20, true);
     const requestedDate = req.nextUrl.searchParams.get("sessionDate");
     const sessionDate =
       requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
         ? requestedDate
-        : availableSessions[0];
+        : weekdaySessions[0] ?? allSessions[0];
 
     const win = getAsiaSessionWindow(sessionDate);
     // Start tick pull at 15:00 PT (Globex open) through 21:00 PT (Asia close)
@@ -116,7 +118,7 @@ export async function GET(req: NextRequest) {
       fetchKrakenOHLC(60),
       fetchKrakenOHLC(30),
       fetchKrakenOHLC(5),
-      fetchKrakenTradesRange(tickStartMs, tickEndMs, 7),
+      fetchKrakenTradesRange(tickStartMs, tickEndMs, 10),
     ]);
 
     const tickM1 = resampleTicksToCandles(ticks, 60_000);
@@ -170,7 +172,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       dataset,
-      availableSessions,
+      availableSessions: allSessions,
     });
   } catch (err) {
     return NextResponse.json(

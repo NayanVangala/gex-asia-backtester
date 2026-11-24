@@ -277,6 +277,8 @@ export function buildFootprintsFromTicks(
       buyVol: Number(buyVol.toFixed(3)),
       sellVol: Number(sellVol.toFixed(3)),
       delta: Number(delta.toFixed(3)),
+      deltaStrengthPct:
+        totalVol > 0 ? Number(((delta / totalVol) * 100).toFixed(1)) : 0,
       maxDelta: Number(maxDelta.toFixed(3)),
       minDelta: Number(minDelta.toFixed(3)),
       cumDelta: Number(runningCvd.toFixed(3)),

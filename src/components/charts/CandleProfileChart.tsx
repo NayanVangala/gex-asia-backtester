@@ -6,10 +6,13 @@ import {
   Candle,
   KeyLevelZone,
   NakedPoc,
+  PendingOrder,
   SimPosition,
   VolumeProfileResult,
 } from "@/lib/types";
 import { formatPTTime } from "@/lib/goldMath";
+
+export type PricePickTarget = "entry" | "stop" | "t1" | "t2" | null;
 
 interface CandleProfileChartProps {
   title: string;
@@ -28,8 +31,10 @@ interface CandleProfileChartProps {
   activeZoneId?: string | null;
   bigTrades?: BigTradePrint[];
   positions?: SimPosition[];
+  pendingOrders?: PendingOrder[];
   asiaOpenTs?: number;
   drawZoneMode?: boolean;
+  pickPriceMode?: PricePickTarget;
   onDrawZoneComplete?: (low: number, high: number) => void;
   onSelectZone?: (zoneId: string) => void;
   onClickPrice?: (price: number) => void;
@@ -103,8 +108,10 @@ export function CandleProfileChart({
   activeZoneId,
   bigTrades = [],
   positions = [],
+  pendingOrders = [],
   asiaOpenTs,
   drawZoneMode = false,
+  pickPriceMode = null,
   onDrawZoneComplete,
   onSelectZone,
   onClickPrice,
@@ -118,7 +125,7 @@ export function CandleProfileChart({
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const [barsCount, setBarsCount] = useState(defaultVisibleBars);
-  const [rightOffset, setRightOffset] = useState(0); // 0 = pinned to latest bar
+  const [rightOffset, setRightOffset] = useState(0);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
   const [dragPan, setDragPan] = useState<{
     startX: number;
@@ -128,7 +135,6 @@ export function CandleProfileChart({
   const [drawCurrentPrice, setDrawCurrentPrice] = useState<number | null>(null);
   const [dims, setDims] = useState({ width: 640, height: 320 });
 
-  // Reset offset if candles shrunk dramatically (new dataset)
   useEffect(() => {
     setRightOffset((prev) => Math.min(prev, Math.max(0, candles.length - 10)));
   }, [candles.length]);
@@ -175,16 +181,19 @@ export function CandleProfileChart({
       if (c.low < lo) lo = c.low;
       if (c.high > hi) hi = c.high;
     }
-    // Include active positions so stops/targets stay visible
     for (const p of positions) {
       if (p.status === "open") {
         lo = Math.min(lo, p.stopPriceExec, p.t1PriceExec, p.entryPriceExec);
         hi = Math.max(hi, p.stopPriceExec, p.t1PriceExec, p.entryPriceExec);
       }
     }
+    for (const o of pendingOrders) {
+      lo = Math.min(lo, o.triggerPriceExec, o.invalidationPriceExec, o.stopPriceExec);
+      hi = Math.max(hi, o.triggerPriceExec, o.invalidationPriceExec, o.stopPriceExec);
+    }
     const pad = Math.max((hi - lo) * 0.14, 1.5);
     return { min: lo - pad, max: hi + pad };
-  }, [visibleSlice, positions]);
+  }, [visibleSlice, positions, pendingOrders]);
 
   const layout = useMemo(() => {
     const padLeft = 8;
@@ -234,7 +243,6 @@ export function CandleProfileChart({
     canvas.height = dims.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Background
     ctx.fillStyle = "#090d14";
     ctx.fillRect(0, 0, dims.width, dims.height);
 
@@ -272,7 +280,7 @@ export function CandleProfileChart({
       );
     }
 
-    // Shade Developing Value middle no-trade zone if developing profile exists
+    // Developing Value no-trade shading
     if (profiles?.developing) {
       const dev = profiles.developing;
       const yVah = priceToY(dev.vah);
@@ -292,7 +300,6 @@ export function CandleProfileChart({
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Developing vPOC line
         const yPoc = priceToY(dev.poc);
         if (yPoc >= padTop && yPoc <= padTop + priceHeight) {
           ctx.strokeStyle = "rgba(251, 191, 36, 0.55)";
@@ -307,7 +314,7 @@ export function CandleProfileChart({
       }
     }
 
-    // Draw Key Level Zones
+    // Key Level Zones
     for (const z of zones) {
       const yTop = priceToY(z.high);
       const yBot = priceToY(z.low);
@@ -331,14 +338,13 @@ export function CandleProfileChart({
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Zone tag on left edge
       ctx.fillStyle = st.text;
       ctx.font = isSelected ? "bold 10px ui-monospace, monospace" : "10px ui-monospace, monospace";
       const badge = `${z.label} (${z.low.toFixed(1)}-${z.high.toFixed(1)})${z.untested ? " [UNTESTED]" : ""}`;
       ctx.fillText(badge, padLeft + 6, Math.max(padTop + 10, clampedTop + 11));
     }
 
-    // Draw Naked POCs
+    // Naked POCs
     for (const np of nakedPocs) {
       if (!np.untested) continue;
       const y = priceToY(np.price);
@@ -356,7 +362,7 @@ export function CandleProfileChart({
       ctx.fillText(`nPOC ${np.price.toFixed(1)}`, padLeft + plotWidth - 88, y - 3);
     }
 
-    // Draw Tokyo open vertical marker
+    // Tokyo open vertical line
     const stepX = plotWidth / Math.max(1, visibleSlice.length);
     const candleWidth = Math.max(2, Math.min(14, stepX * 0.68));
     if (asiaOpenTs) {
@@ -377,7 +383,7 @@ export function CandleProfileChart({
       }
     }
 
-    // Draw Candles + Volume Bars
+    // Candles + Volume Histogram
     const maxVol = Math.max(...visibleSlice.map((c) => c.volume), 1);
     const volTop = padTop + priceHeight + 6;
 
@@ -392,7 +398,6 @@ export function CandleProfileChart({
       const yOpen = priceToY(c.open);
       const yClose = priceToY(c.close);
 
-      // Wick
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -400,13 +405,11 @@ export function CandleProfileChart({
       ctx.lineTo(Math.round(cx) + 0.5, yLow);
       ctx.stroke();
 
-      // Body
       const bodyTop = Math.min(yOpen, yClose);
       const bodyH = Math.max(1.5, Math.abs(yClose - yOpen));
       ctx.fillStyle = isUp ? "#059669" : "#dc2626";
       ctx.fillRect(cx - candleWidth / 2, bodyTop, candleWidth, bodyH);
 
-      // Volume histogram
       const vh = (c.volume / maxVol) * (volHeight - 4);
       ctx.fillStyle = isUp
         ? "rgba(16, 185, 129, 0.35)"
@@ -419,7 +422,7 @@ export function CandleProfileChart({
       );
     }
 
-    // Draw VWAP curve
+    // VWAP curve
     if (vwapMap.size > 0) {
       ctx.strokeStyle = "#e2e8f0";
       ctx.lineWidth = 1.4;
@@ -444,7 +447,7 @@ export function CandleProfileChart({
       ctx.stroke();
     }
 
-    // Draw Big Trades tape markers (Section 15: markers on candles from trade tape, NOT heatmap bubbles)
+    // Big Trades markers
     if (bigTrades.length > 0) {
       const tsToIdx = new Map<number, number>();
       visibleSlice.forEach((c, idx) => tsToIdx.set(c.ts, idx));
@@ -454,7 +457,7 @@ export function CandleProfileChart({
         const cx = padLeft + idx * stepX + stepX / 2;
         const cy = priceToY(bt.price);
         if (cy < padTop || cy > padTop + priceHeight) continue;
-        const radius = bt.tier === "whale" ? 5.5 : 3.5;
+        const radius = bt.tier === "whale" ? 6 : 3.5;
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
         ctx.fillStyle =
@@ -465,12 +468,12 @@ export function CandleProfileChart({
               : "rgba(250, 204, 21, 0.65)";
         ctx.fill();
         ctx.strokeStyle = bt.tier === "whale" ? "#fef08a" : "#0b0f17";
-        ctx.lineWidth = bt.tier === "whale" ? 1.5 : 1;
+        ctx.lineWidth = bt.tier === "whale" ? 1.6 : 1;
         ctx.stroke();
       }
     }
 
-    // Draw Right-Hand Volume Profile Histogram
+    // Right-Hand Volume Profile Histogram
     if (activeProfile && profileWidth > 0) {
       const profRightX = dims.width - layout.axisRightWidth - 2;
       const maxBinVol = Math.max(...activeProfile.bins.map((b) => b.volume), 1);
@@ -490,7 +493,6 @@ export function CandleProfileChart({
         ctx.fillRect(profRightX - barW, y - 1.5, barW, 3);
       }
 
-      // Label VAH / POC / VAL ticks on profile column
       const drawTag = (p: number, lbl: string, color: string) => {
         const y = priceToY(p);
         if (y < padTop || y > padTop + priceHeight) return;
@@ -509,28 +511,139 @@ export function CandleProfileChart({
       drawTag(activeProfile.val, "VAL", "#38bdf8");
     }
 
-    // Draw Active/Closed Positions lines
-    for (const pos of positions) {
-      if (pos.status !== "open") continue;
-      const drawOrderLine = (price: number, label: string, color: string) => {
-        const y = priceToY(price);
-        if (y < padTop || y > padTop + priceHeight) return;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.3;
-        ctx.setLineDash([5, 3]);
+    // Pending Working Orders (Buy/Sell Stop & Limit + Auto-Cancel Invalidation Line)
+    for (const ord of pendingOrders) {
+      const yTrig = priceToY(ord.triggerPriceExec);
+      const yInv = priceToY(ord.invalidationPriceExec);
+      if (yTrig >= padTop && yTrig <= padTop + priceHeight) {
+        ctx.strokeStyle = "#facc15";
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([6, 3]);
         ctx.beginPath();
-        ctx.moveTo(padLeft, y);
-        ctx.lineTo(padLeft + plotWidth, y);
+        ctx.moveTo(padLeft, yTrig);
+        ctx.lineTo(padLeft + plotWidth, yTrig);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = color;
+        ctx.fillStyle = "#fde047";
         ctx.font = "bold 10px ui-monospace, monospace";
-        ctx.fillText(`${label} ${price.toFixed(2)}`, padLeft + 8, y - 4);
-      };
-      drawOrderLine(pos.entryPriceExec, `${pos.side.toUpperCase()} ${pos.contracts}x`, "#38bdf8");
-      drawOrderLine(pos.stopPriceExec, "STOP", "#ef4444");
-      drawOrderLine(pos.t1PriceExec, "T1", "#10b981");
-      drawOrderLine(pos.t2PriceExec, "T2", "#22c55e");
+        ctx.fillText(
+          `WORKING ${ord.side.toUpperCase()} ${ord.orderType.toUpperCase()} @ ${ord.triggerPriceExec.toFixed(2)}`,
+          padLeft + 8,
+          yTrig - 4
+        );
+      }
+      if (yInv >= padTop && yInv <= padTop + priceHeight) {
+        ctx.strokeStyle = "rgba(244, 63, 94, 0.7)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(padLeft, yInv);
+        ctx.lineTo(padLeft + plotWidth, yInv);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#fda4af";
+        ctx.font = "9px ui-monospace, monospace";
+        ctx.fillText(
+          `AUTO-CANCEL INVALIDATION ${ord.invalidationPriceExec.toFixed(2)}`,
+          padLeft + 8,
+          yInv + 10
+        );
+      }
+    }
+
+    // Open & Closed Positions (Bracket lines + Risk/Reward Box + Entry/Exit Triangles)
+    const findBarX = (ts: number) => {
+      let idx = visibleSlice.findIndex((c) => c.ts >= ts);
+      if (idx === -1) idx = visibleSlice.length - 1;
+      return padLeft + idx * stepX + stepX / 2;
+    };
+
+    for (const pos of positions) {
+      const entryX = findBarX(pos.openedAtTs);
+      const entryY = priceToY(pos.entryPriceExec);
+
+      if (pos.status === "open") {
+        // Shaded Risk & Reward bracket boxes from entry bar forward
+        const rightEdge = padLeft + plotWidth;
+        const stopY = priceToY(pos.stopPriceExec);
+        const t2Y = priceToY(pos.t2PriceExec);
+
+        ctx.fillStyle = "rgba(239, 68, 68, 0.08)";
+        ctx.fillRect(
+          entryX,
+          Math.min(entryY, stopY),
+          Math.max(12, rightEdge - entryX),
+          Math.abs(stopY - entryY)
+        );
+        ctx.fillStyle = "rgba(16, 185, 129, 0.08)";
+        ctx.fillRect(
+          entryX,
+          Math.min(entryY, t2Y),
+          Math.max(12, rightEdge - entryX),
+          Math.abs(t2Y - entryY)
+        );
+
+        const drawOrderLine = (price: number, label: string, color: string) => {
+          const y = priceToY(price);
+          if (y < padTop || y > padTop + priceHeight) return;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.3;
+          ctx.setLineDash([5, 3]);
+          ctx.beginPath();
+          ctx.moveTo(padLeft, y);
+          ctx.lineTo(padLeft + plotWidth, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = color;
+          ctx.font = "bold 10px ui-monospace, monospace";
+          ctx.fillText(`${label} ${price.toFixed(2)}`, padLeft + 8, y - 4);
+        };
+        drawOrderLine(
+          pos.entryPriceExec,
+          `${pos.side.toUpperCase()} ${pos.contracts}×`,
+          "#38bdf8"
+        );
+        drawOrderLine(pos.stopPriceExec, "STOP", "#ef4444");
+        drawOrderLine(pos.t1PriceExec, "T1", "#10b981");
+        drawOrderLine(pos.t2PriceExec, "T2", "#22c55e");
+      } else if (pos.closedAtTs && pos.exitPriceExec !== undefined) {
+        // Closed trade trade-replay connector + entry/exit triangles + R badge
+        const exitX = findBarX(pos.closedAtTs);
+        const exitY = priceToY(pos.exitPriceExec);
+        const win = (pos.rMultiple ?? 0) >= 0;
+
+        ctx.strokeStyle = win ? "#34d399" : "#fb7185";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 2]);
+        ctx.beginPath();
+        ctx.moveTo(entryX, entryY);
+        ctx.lineTo(exitX, exitY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Entry triangle
+        ctx.fillStyle = pos.side === "long" ? "#10b981" : "#f43f5e";
+        ctx.beginPath();
+        if (pos.side === "long") {
+          ctx.moveTo(entryX, entryY - 5);
+          ctx.lineTo(entryX - 5, entryY + 5);
+          ctx.lineTo(entryX + 5, entryY + 5);
+        } else {
+          ctx.moveTo(entryX, entryY + 5);
+          ctx.lineTo(entryX - 5, entryY - 5);
+          ctx.lineTo(entryX + 5, entryY - 5);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        // Exit pill
+        const rTxt = `${(pos.rMultiple ?? 0) >= 0 ? "+" : ""}${(pos.rMultiple ?? 0).toFixed(2)}R`;
+        ctx.fillStyle = win ? "#065f46" : "#881337";
+        ctx.fillRect(exitX - 18, exitY - 16, 40, 14);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 9px ui-monospace, monospace";
+        ctx.fillText(rTxt, exitX - 14, exitY - 6);
+      }
     }
 
     // Draw interactive zone preview while dragging
@@ -544,7 +657,7 @@ export function CandleProfileChart({
       ctx.strokeRect(padLeft, y1, plotWidth, Math.max(2, y2 - y1));
     }
 
-    // Current Last Price badge on right axis
+    // Current Last Price badge
     const lastCandle = visibleSlice[visibleSlice.length - 1];
     if (lastCandle) {
       const ly = priceToY(lastCandle.close);
@@ -584,11 +697,20 @@ export function CandleProfileChart({
       }
     }
 
-    // Local Crosshair + OHLC readout
+    // Local Crosshair + Click-to-Pick Price label
     if (mousePos) {
       const { x, y } = mousePos;
-      ctx.strokeStyle = "rgba(148, 163, 184, 0.45)";
-      ctx.lineWidth = 1;
+      const pickColor =
+        pickPriceMode === "stop"
+          ? "#ef4444"
+          : pickPriceMode === "t1" || pickPriceMode === "t2"
+            ? "#10b981"
+            : pickPriceMode === "entry"
+              ? "#facc15"
+              : "rgba(148, 163, 184, 0.45)";
+
+      ctx.strokeStyle = pickColor;
+      ctx.lineWidth = pickPriceMode ? 1.4 : 1;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(x, padTop);
@@ -599,11 +721,26 @@ export function CandleProfileChart({
       ctx.setLineDash([]);
 
       const hp = yToPrice(y);
-      ctx.fillStyle = "#1e293b";
+      ctx.fillStyle = pickPriceMode ? "#0f172a" : "#1e293b";
       ctx.fillRect(dims.width - layout.axisRightWidth, y - 8, layout.axisRightWidth - 2, 16);
-      ctx.fillStyle = "#f8fafc";
-      ctx.font = "10px ui-monospace, monospace";
+      ctx.fillStyle = pickPriceMode ? pickColor : "#f8fafc";
+      ctx.font = "bold 10px ui-monospace, monospace";
       ctx.fillText(hp.toFixed(2), dims.width - layout.axisRightWidth + 5, y + 3);
+
+      if (pickPriceMode) {
+        ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+        ctx.fillRect(x + 10, y - 16, 132, 18);
+        ctx.strokeStyle = pickColor;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 10, y - 16, 132, 18);
+        ctx.fillStyle = pickColor;
+        ctx.font = "bold 10px ui-monospace, monospace";
+        ctx.fillText(
+          `SET ${pickPriceMode.toUpperCase()}: ${hp.toFixed(2)}`,
+          x + 15,
+          y - 4
+        );
+      }
     }
   }, [
     dims,
@@ -618,17 +755,20 @@ export function CandleProfileChart({
     vwapMap,
     bigTrades,
     positions,
+    pendingOrders,
     asiaOpenTs,
     mousePos,
     hoverTs,
     drawZoneMode,
+    pickPriceMode,
     drawStartPrice,
     drawCurrentPrice,
     show1OZGrid,
   ]);
 
   const hoveredCandle = useMemo(() => {
-    if (!mousePos || visibleSlice.length === 0) return visibleSlice[visibleSlice.length - 1] ?? null;
+    if (!mousePos || visibleSlice.length === 0)
+      return visibleSlice[visibleSlice.length - 1] ?? null;
     const idx = Math.floor(
       ((mousePos.x - layout.padLeft) / layout.plotWidth) * visibleSlice.length
     );
@@ -649,22 +789,22 @@ export function CandleProfileChart({
     const y = e.clientY - rect.top;
     const clickedPrice = yToPrice(y);
 
+    if (pickPriceMode && onClickPrice) {
+      onClickPrice(Number(clickedPrice.toFixed(2)));
+      return;
+    }
+
     if (drawZoneMode) {
       setDrawStartPrice(clickedPrice);
       setDrawCurrentPrice(clickedPrice);
       return;
     }
 
-    // Check if clicking inside an existing zone
     const hitZone = zones.find(
       (z) => clickedPrice >= z.low && clickedPrice <= z.high
     );
     if (hitZone && onSelectZone && e.detail === 1) {
       onSelectZone(hitZone.id);
-    }
-    if (e.altKey && onClickPrice) {
-      onClickPrice(Number(clickedPrice.toFixed(2)));
-      return;
     }
 
     setDragPan({ startX: x, startOffset: rightOffset });
@@ -677,7 +817,9 @@ export function CandleProfileChart({
     setMousePos({ x, y });
 
     if (visibleSlice.length > 0 && onHoverTs) {
-      const idx = Math.floor(((x - layout.padLeft) / layout.plotWidth) * visibleSlice.length);
+      const idx = Math.floor(
+        ((x - layout.padLeft) / layout.plotWidth) * visibleSlice.length
+      );
       const bar = visibleSlice[Math.max(0, Math.min(visibleSlice.length - 1, idx))];
       if (bar) onHoverTs(bar.ts);
     }
@@ -691,7 +833,9 @@ export function CandleProfileChart({
       const dx = x - dragPan.startX;
       const barsPerPx = barsCount / Math.max(1, layout.plotWidth);
       const next = Math.round(dragPan.startOffset + dx * barsPerPx);
-      setRightOffset(Math.max(0, Math.min(Math.max(0, candles.length - 12), next)));
+      setRightOffset(
+        Math.max(0, Math.min(Math.max(0, candles.length - 12), next))
+      );
     }
   };
 
@@ -725,6 +869,11 @@ export function CandleProfileChart({
               DRAG TO DRAW ZONE
             </span>
           )}
+          {pickPriceMode && (
+            <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300 border border-amber-500/50 animate-pulse">
+              CLICK CHART TO SET {pickPriceMode.toUpperCase()}
+            </span>
+          )}
         </div>
         {hoveredCandle && (
           <div className="hidden sm:flex items-center gap-2.5 font-mono-num text-[11px] text-slate-300">
@@ -744,7 +893,10 @@ export function CandleProfileChart({
               C {hoveredCandle.close.toFixed(2)}
             </span>
             <span className="text-slate-400">
-              V {hoveredCandle.volume >= 10 ? hoveredCandle.volume.toFixed(0) : hoveredCandle.volume.toFixed(2)}
+              V{" "}
+              {hoveredCandle.volume >= 10
+                ? hoveredCandle.volume.toFixed(0)
+                : hoveredCandle.volume.toFixed(2)}
             </span>
           </div>
         )}
@@ -752,7 +904,11 @@ export function CandleProfileChart({
       <div ref={containerRef} className={`relative w-full ${heightClass}`}>
         <canvas
           ref={canvasRef}
-          className={`block h-full w-full ${drawZoneMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
+          className={`block h-full w-full ${
+            drawZoneMode || pickPriceMode
+              ? "cursor-crosshair"
+              : "cursor-grab active:cursor-grabbing"
+          }`}
           onWheel={handleWheel}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}

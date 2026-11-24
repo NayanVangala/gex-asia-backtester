@@ -1,20 +1,22 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { FootprintBar, KeyLevelZone } from "@/lib/types";
+import { FootprintBar, FootprintPriceRow, KeyLevelZone } from "@/lib/types";
 import { formatPTTime } from "@/lib/goldMath";
 
 interface FootprintChartProps {
+  title?: string;
   bars: FootprintBar[];
   hasRealAggressorTape: boolean;
   zones: KeyLevelZone[];
   activeZoneId?: string | null;
   priceStep: number;
   mode: "bid_ask" | "delta";
-  onModeChange: (mode: "bid_ask" | "delta") => void;
+  onModeChange?: (mode: "bid_ask" | "delta") => void;
   onSwitchToPaxg?: () => void;
   onOpenCsvModal?: () => void;
   heightClass?: string;
+  defaultVisibleBars?: number;
 }
 
 function fmtVol(v: number): string {
@@ -26,6 +28,7 @@ function fmtVol(v: number): string {
 }
 
 export function FootprintChart({
+  title,
   bars,
   hasRealAggressorTape,
   zones,
@@ -35,13 +38,23 @@ export function FootprintChart({
   onModeChange,
   onSwitchToPaxg,
   onOpenCsvModal,
-  heightClass = "h-[340px]",
+  heightClass = "h-[365px]",
+  defaultVisibleBars = 9,
 }: FootprintChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [visibleCount, setVisibleCount] = useState(9);
+  const [visibleCount, setVisibleCount] = useState(defaultVisibleBars);
   const [rightOffset, setRightOffset] = useState(0);
-  const [dims, setDims] = useState({ width: 580, height: 320 });
+  const [dims, setDims] = useState({ width: 580, height: 340 });
+  const [hoverInfo, setHoverInfo] = useState<{
+    bar: FootprintBar;
+    row: FootprintPriceRow | null;
+    colIdx: number;
+  } | null>(null);
+  const [dragPan, setDragPan] = useState<{
+    startX: number;
+    startOffset: number;
+  } | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -66,6 +79,52 @@ export function FootprintChart({
     const start = Math.max(0, end - visibleCount);
     return bars.slice(start, end);
   }, [bars, visibleCount, rightOffset]);
+
+  // Shared geometry so canvas render and mouse hit-testing match identically
+  const geom = useMemo(() => {
+    const padLeft = 48;
+    const padRight = 58;
+    const padTop = 22;
+    const statsRows = 6; // Delta, ΔStr%, MaxΔ, MinΔ, CVD, Vol
+    const statsRowH = 14;
+    const statsHeight = statsRows * statsRowH + 18;
+    const plotW = Math.max(100, dims.width - padLeft - padRight);
+    const plotH = Math.max(80, dims.height - padTop - statsHeight);
+
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const b of visibleBars) {
+      if (b.low < lo) lo = b.low;
+      if (b.high > hi) hi = b.high;
+    }
+    const quantize = (p: number) => Math.round(p / priceStep) * priceStep;
+    const minP = Number.isFinite(lo) ? quantize(lo) - priceStep : 3500;
+    const maxP = Number.isFinite(hi) ? quantize(hi) + priceStep : 3510;
+    const numPriceRows = Math.max(4, Math.round((maxP - minP) / priceStep) + 1);
+    const rowH = Math.max(10, Math.min(20, plotH / numPriceRows));
+    const colW = plotW / Math.max(1, visibleBars.length);
+
+    return {
+      padLeft,
+      padRight,
+      padTop,
+      statsRows,
+      statsRowH,
+      statsHeight,
+      plotW,
+      plotH,
+      minP,
+      maxP,
+      numPriceRows,
+      rowH,
+      colW,
+    };
+  }, [dims, visibleBars, priceStep]);
+
+  const priceToY = (p: number) =>
+    geom.padTop +
+    ((geom.maxP - p) / Math.max(priceStep, geom.maxP - geom.minP)) *
+      (geom.plotH - geom.rowH);
 
   useEffect(() => {
     if (!hasRealAggressorTape) return;
@@ -94,31 +153,21 @@ export function FootprintChart({
       return;
     }
 
-    const padLeft = 46; // ClusterStatistic labels on bottom left
-    const padRight = 58; // Price axis
-    const padTop = 22; // Signal badges row
-    const statsRows = 5; // Delta, MaxD, MinD, CVD, Vol
-    const statsRowH = 14;
-    const statsHeight = statsRows * statsRowH + 18;
-    const plotW = Math.max(100, dims.width - padLeft - padRight);
-    const plotH = Math.max(80, dims.height - padTop - statsHeight);
+    const {
+      padLeft,
+      padRight,
+      padTop,
+      statsRows,
+      statsRowH,
+      plotW,
+      plotH,
+      maxP,
+      numPriceRows,
+      rowH,
+      colW,
+    } = geom;
 
-    // Price range across visible footprint bars
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (const b of visibleBars) {
-      if (b.low < lo) lo = b.low;
-      if (b.high > hi) hi = b.high;
-    }
-    const quantize = (p: number) => Math.round(p / priceStep) * priceStep;
-    const minP = quantize(lo) - priceStep;
-    const maxP = quantize(hi) + priceStep;
-    const numPriceRows = Math.max(4, Math.round((maxP - minP) / priceStep) + 1);
-    const rowH = Math.max(10, Math.min(20, plotH / numPriceRows));
-    const priceToY = (p: number) =>
-      padTop + ((maxP - p) / Math.max(priceStep, maxP - minP)) * (plotH - rowH);
-
-    // Draw Zone highlights across footprint background
+    // Zone highlights
     for (const z of zones) {
       const y1 = priceToY(z.high);
       const y2 = priceToY(z.low) + rowH;
@@ -148,8 +197,6 @@ export function FootprintChart({
       ctx.fillText(p.toFixed(2), dims.width - padRight + 5, y + rowH / 2 + 3);
     }
 
-    // Draw each Footprint Bar column
-    const colW = plotW / visibleBars.length;
     const maxCellVol = Math.max(
       ...visibleBars.flatMap((b) => b.rows.map((r) => r.totalVol)),
       0.01
@@ -160,7 +207,13 @@ export function FootprintChart({
       const innerW = colW - 4;
       const barCenter = colX + colW / 2;
 
-      // Top signal flags (ABS, EXH, FLIP, DIV)
+      // Highlight hovered bar column
+      if (hoverInfo && hoverInfo.colIdx === idx) {
+        ctx.fillStyle = "rgba(56, 189, 248, 0.06)";
+        ctx.fillRect(colX, padTop, colW, plotH + statsRows * statsRowH);
+      }
+
+      // Top signal flags
       const tags: Array<{ t: string; c: string }> = [];
       if (bar.absorptionLow) tags.push({ t: "ABS↓", c: "#22c55e" });
       if (bar.absorptionHigh) tags.push({ t: "ABS↑", c: "#f43f5e" });
@@ -176,37 +229,39 @@ export function FootprintChart({
         ctx.fillText(tags.slice(0, 2).map((x) => x.t).join(" "), barCenter, 14);
       }
 
-      // Thin open-close candle spine on far left of cluster
+      // Open-close candle spine
       const spineX = colX + 3;
       const yO = priceToY(bar.open) + rowH / 2;
       const yC = priceToY(bar.close) + rowH / 2;
       ctx.fillStyle = bar.close >= bar.open ? "#10b981" : "#ef4444";
       ctx.fillRect(spineX, Math.min(yO, yC), 3, Math.max(2, Math.abs(yC - yO)));
 
-      // Footprint rows
       for (const row of bar.rows) {
         const ry = priceToY(row.price);
         if (ry < padTop - rowH || ry > padTop + plotH) continue;
         const intensity = Math.min(1, row.totalVol / maxCellVol);
+        const isHoveredCell =
+          hoverInfo?.colIdx === idx && hoverInfo.row?.price === row.price;
 
         if (mode === "bid_ask") {
           const halfW = (innerW - 7) / 2;
           const cellX = colX + 7;
 
-          // Bid side (left) shading
           ctx.fillStyle = row.bidImbalance
             ? "rgba(239, 68, 68, 0.55)"
             : `rgba(239, 68, 68, ${(0.06 + intensity * 0.24).toFixed(2)})`;
           ctx.fillRect(cellX, ry, halfW, Math.max(9, rowH - 1));
 
-          // Ask side (right) shading
           ctx.fillStyle = row.askImbalance
             ? "rgba(16, 185, 129, 0.55)"
             : `rgba(16, 185, 129, ${(0.06 + intensity * 0.24).toFixed(2)})`;
           ctx.fillRect(cellX + halfW + 1, ry, halfW, Math.max(9, rowH - 1));
 
-          // POC gold outline
-          if (row.isPoc) {
+          if (isHoveredCell) {
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = 1.4;
+            ctx.strokeRect(cellX, ry, innerW - 6, Math.max(9, rowH - 1));
+          } else if (row.isPoc) {
             ctx.strokeStyle = "#facc15";
             ctx.lineWidth = 1.2;
             ctx.strokeRect(cellX, ry, innerW - 6, Math.max(9, rowH - 1));
@@ -230,7 +285,6 @@ export function FootprintChart({
             ctx.fillText(fmtVol(row.askVol), cellX + halfW + 3, ry + Math.min(rowH - 2, 10));
           }
         } else {
-          // Delta cluster mode
           const cellX = colX + 7;
           const cellW = innerW - 6;
           const isPos = row.delta >= 0;
@@ -239,7 +293,11 @@ export function FootprintChart({
             : `rgba(239, 68, 68, ${(0.12 + intensity * 0.55).toFixed(2)})`;
           ctx.fillRect(cellX, ry, cellW, Math.max(9, rowH - 1));
 
-          if (row.isPoc) {
+          if (isHoveredCell) {
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = 1.4;
+            ctx.strokeRect(cellX, ry, cellW, Math.max(9, rowH - 1));
+          } else if (row.isPoc) {
             ctx.strokeStyle = "#facc15";
             ctx.lineWidth = 1.2;
             ctx.strokeRect(cellX, ry, cellW, Math.max(9, rowH - 1));
@@ -267,10 +325,15 @@ export function FootprintChart({
       ctx.lineTo(colX, dims.height - 16);
       ctx.stroke();
 
-      // ClusterStatistic bottom table rows
+      // ClusterStatistic + DeltaStrength footer rows
       const statsTop = padTop + plotH + 2;
       const cells = [
         { val: bar.delta, text: (bar.delta > 0 ? "+" : "") + fmtVol(bar.delta), colorize: true },
+        {
+          val: bar.deltaStrengthPct,
+          text: `${bar.deltaStrengthPct > 0 ? "+" : ""}${Math.round(bar.deltaStrengthPct)}%`,
+          colorize: true,
+        },
         { val: bar.maxDelta, text: "+" + fmtVol(Math.max(0, bar.maxDelta)), colorize: false },
         { val: bar.minDelta, text: fmtVol(Math.min(0, bar.minDelta)), colorize: false },
         { val: bar.cumDelta, text: (bar.cumDelta > 0 ? "+" : "") + fmtVol(bar.cumDelta), colorize: true },
@@ -294,16 +357,15 @@ export function FootprintChart({
         ctx.fillText(cell.text, barCenter, y + 10);
       });
 
-      // Bar time label
       ctx.fillStyle = "#64748b";
       ctx.font = "9px ui-monospace, monospace";
       ctx.textAlign = "center";
       ctx.fillText(formatPTTime(bar.ts), barCenter, dims.height - 4);
     });
 
-    // Left-hand ClusterStatistic row labels
+    // Left ClusterStatistic row labels
     const statsTop = padTop + plotH + 2;
-    const labels = ["Delta", "MaxΔ", "MinΔ", "CVD", "Vol"];
+    const labels = ["Delta", "ΔStr%", "MaxΔ", "MinΔ", "CVD", "Vol"];
     ctx.fillStyle = "#0b0f18";
     ctx.fillRect(0, statsTop, padLeft - 2, statsRows * statsRowH);
     ctx.font = "bold 9px ui-monospace, monospace";
@@ -312,42 +374,106 @@ export function FootprintChart({
       ctx.fillStyle = "#94a3b8";
       ctx.fillText(lbl, 6, statsTop + rIdx * statsRowH + 10);
     });
-  }, [dims, visibleBars, hasRealAggressorTape, zones, activeZoneId, priceStep, mode]);
+  }, [dims, visibleBars, hasRealAggressorTape, zones, activeZoneId, priceStep, mode, geom, hoverInfo]);
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (dragPan) {
+      const dx = x - dragPan.startX;
+      const deltaCols = Math.round(dx / Math.max(20, geom.colW));
+      setRightOffset(
+        Math.max(0, Math.min(Math.max(0, bars.length - 4), dragPan.startOffset + deltaCols))
+      );
+      return;
+    }
+
+    if (visibleBars.length === 0) return;
+    const colIdx = Math.floor((x - geom.padLeft) / geom.colW);
+    if (colIdx < 0 || colIdx >= visibleBars.length) {
+      setHoverInfo(null);
+      return;
+    }
+    const bar = visibleBars[colIdx];
+    const hitRow =
+      bar.rows.find((r) => {
+        const ry = priceToY(r.price);
+        return y >= ry && y <= ry + geom.rowH;
+      }) ?? null;
+
+    setHoverInfo({ bar, row: hitRow, colIdx });
+  };
 
   return (
     <div className="flex flex-col rounded-lg border border-[#1c2436] bg-[#090d14] overflow-hidden">
-      <div className="flex items-center justify-between gap-2 border-b border-[#1c2436] bg-[#0c111b] px-3 py-1.5 text-xs">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1c2436] bg-[#0c111b] px-3 py-1.5 text-xs">
+        <div className="flex items-center gap-2 min-w-0">
           <span className="font-semibold tracking-wide text-slate-100">
-            M5 Footprint ({mode === "bid_ask" ? "Bid × Ask" : "Delta"})
+            {title ?? `M5 Footprint (${mode === "bid_ask" ? "Bid × Ask" : "Delta"})`}
           </span>
-          <span className="text-[10px] font-mono-num text-slate-400">
-            300% Imb · Step ${priceStep.toFixed(2)}
-          </span>
+          {hoverInfo ? (
+            <div className="flex items-center gap-2 font-mono-num text-[10px] text-slate-300 truncate">
+              <span className="text-sky-300">
+                {formatPTTime(hoverInfo.bar.ts)} PT
+              </span>
+              {hoverInfo.row && (
+                <>
+                  <span className="text-amber-300">
+                    ${hoverInfo.row.price.toFixed(2)}
+                  </span>
+                  <span className="text-rose-300">
+                    Bid {fmtVol(hoverInfo.row.bidVol)}
+                  </span>
+                  <span className="text-emerald-300">
+                    Ask {fmtVol(hoverInfo.row.askVol)}
+                  </span>
+                  <span>
+                    Δ {hoverInfo.row.delta > 0 ? "+" : ""}
+                    {fmtVol(hoverInfo.row.delta)}
+                  </span>
+                </>
+              )}
+              <span className="text-slate-400">
+                {hoverInfo.bar.tradeCount} prints · ΔStr{" "}
+                {hoverInfo.bar.deltaStrengthPct > 0 ? "+" : ""}
+                {hoverInfo.bar.deltaStrengthPct}%
+              </span>
+            </div>
+          ) : (
+            <span className="text-[10px] font-mono-num text-slate-400">
+              300% Imb · Step ${priceStep.toFixed(2)} · Hover cells to inspect
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onModeChange("bid_ask")}
-            className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
-              mode === "bid_ask"
-                ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            Bid × Ask
-          </button>
-          <button
-            type="button"
-            onClick={() => onModeChange("delta")}
-            className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
-              mode === "delta"
-                ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            Delta
-          </button>
+          {onModeChange && (
+            <>
+              <button
+                type="button"
+                onClick={() => onModeChange("bid_ask")}
+                className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+                  mode === "bid_ask"
+                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Bid × Ask
+              </button>
+              <button
+                type="button"
+                onClick={() => onModeChange("delta")}
+                className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+                  mode === "delta"
+                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Delta
+              </button>
+            </>
+          )}
           {hasRealAggressorTape && (
             <div className="ml-1 flex items-center gap-0.5 border-l border-[#1c2436] pl-1.5">
               <button
@@ -408,7 +534,17 @@ export function FootprintChart({
         ) : (
           <canvas
             ref={canvasRef}
-            className="block h-full w-full"
+            className="block h-full w-full cursor-grab active:cursor-grabbing"
+            onMouseDown={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              setDragPan({ startX: e.clientX - rect.left, startOffset: rightOffset });
+            }}
+            onMouseMove={handleMouseMove}
+            onMouseUp={() => setDragPan(null)}
+            onMouseLeave={() => {
+              setDragPan(null);
+              setHoverInfo(null);
+            }}
             onWheel={(e) => {
               e.preventDefault();
               if (e.shiftKey) {

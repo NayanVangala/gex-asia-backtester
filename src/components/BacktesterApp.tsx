@@ -7,10 +7,14 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Crosshair,
   Database,
+  Eye,
+  EyeOff,
   FastForward,
   Flame,
   Layers,
+  LayoutGrid,
   Pause,
   Play,
   RefreshCw,
@@ -18,21 +22,37 @@ import {
   Upload,
 } from "lucide-react";
 import {
+  DrillCall,
   KeyLevelZone,
+  PendingOrder,
   PremarketPlan,
   ScenarioNumber,
   SessionDataset,
   SimPosition,
   SimRepLog,
 } from "@/lib/types";
-import { formatPTTime } from "@/lib/goldMath";
+import {
+  evaluatePendingOrderOnBar,
+  formatPTTime,
+  gradeDrillCall,
+} from "@/lib/goldMath";
 import {
   computeAllSessionProfiles,
   computeSessionVwap,
 } from "@/lib/volumeProfile";
 import { buildFootprintsFromTicks } from "@/lib/footprint";
-import { loadJournalReps, saveJournalReps } from "@/lib/journal";
-import { CandleProfileChart } from "./charts/CandleProfileChart";
+import {
+  loadJournalReps,
+  loadSavedCustomZones,
+  loadSavedPlan,
+  saveCustomZonesForSession,
+  saveJournalReps,
+  savePlanForSession,
+} from "@/lib/journal";
+import {
+  CandleProfileChart,
+  PricePickTarget,
+} from "./charts/CandleProfileChart";
 import { FootprintChart } from "./charts/FootprintChart";
 import { CvdChart } from "./charts/CvdChart";
 import { HeatmapChart } from "./charts/HeatmapChart";
@@ -41,9 +61,12 @@ import { ExecutionSidebar } from "./ExecutionSidebar";
 import { JournalView } from "./JournalView";
 import { PlaybookView } from "./PlaybookView";
 import { DataLoaderModal } from "./DataLoaderModal";
+import { TapePanel } from "./TapePanel";
+import { DrillModeCard } from "./DrillModeCard";
 
 type ActiveTab = "premarket" | "replay" | "journal" | "playbook";
 type FeedPreset = "paxg" | "gc";
+type ReplayLayout = "standard" | "dual_fp" | "tape_focus";
 
 const DEFAULT_PLAN = (sessionDate: string): PremarketPlan => ({
   sessionDate,
@@ -74,25 +97,40 @@ export function BacktesterApp() {
   const [playSpeedMs, setPlaySpeedMs] = useState<number>(700);
 
   // Chart tools & toggles
-  const [showHeatmap, setShowHeatmap] = useState<boolean>(false); // OFF by default per user request
+  const [replayLayout, setReplayLayout] = useState<ReplayLayout>("standard");
+  const [showHeatmap, setShowHeatmap] = useState<boolean>(false); // OFF by default
+  const [showTape, setShowTape] = useState<boolean>(true);
+  const [drillMode, setDrillMode] = useState<boolean>(false);
+  const [blindDate, setBlindDate] = useState<boolean>(false);
   const [footprintMode, setFootprintMode] = useState<"bid_ask" | "delta">(
     "bid_ask"
   );
   const [fpStep, setFpStep] = useState<number>(0.5);
+  const [customBigLarge, setCustomBigLarge] = useState<number | null>(null);
+  const [customBigWhale, setCustomBigWhale] = useState<number | null>(null);
   const [profileDisplayMode, setProfileDisplayMode] = useState<
     "developing" | "pd" | "composite" | "pw"
   >("developing");
   const [drawZoneMode, setDrawZoneMode] = useState<boolean>(false);
+  const [pickPriceMode, setPickPriceMode] = useState<PricePickTarget>(null);
+  const [pickedPrices, setPickedPrices] = useState<{
+    entry?: number;
+    stop?: number;
+    t1?: number;
+    t2?: number;
+  }>({});
   const [customZones, setCustomZones] = useState<KeyLevelZone[]>([]);
   const [pinnedZoneIds, setPinnedZoneIds] = useState<Set<string>>(new Set());
   const [activeZoneId, setActiveZoneId] = useState<string | null>(null);
   const [hoverTs, setHoverTs] = useState<number | null>(null);
   const [csvModalOpen, setCsvModalOpen] = useState<boolean>(false);
 
-  // Plan, Positions, Account & Sim Rep Journal
+  // Plan, Positions, Working Pending Orders, Drills, Account & Sim Rep Journal
   const [plan, setPlan] = useState<PremarketPlan>(() => DEFAULT_PLAN(""));
   const [accountBalance, setAccountBalance] = useState<number>(300);
   const [positions, setPositions] = useState<SimPosition[]>([]);
+  const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
+  const [drillCalls, setDrillCalls] = useState<DrillCall[]>([]);
   const [reps, setReps] = useState<SimRepLog[]>([]);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
@@ -102,20 +140,24 @@ export function BacktesterApp() {
 
   const flashToast = useCallback((msg: string) => {
     setToastMsg(msg);
-    setTimeout(() => setToastMsg((cur) => (cur === msg ? null : cur)), 3800);
+    setTimeout(() => setToastMsg((cur) => (cur === msg ? null : cur)), 4200);
   }, []);
 
   const applyDataset = useCallback((ds: SessionDataset) => {
     setDataset(ds);
     setSelectedSessionDate(ds.sessionDate);
-    setPlan(DEFAULT_PLAN(ds.sessionDate));
+    setPlan(loadSavedPlan(ds.sessionDate) ?? DEFAULT_PLAN(ds.sessionDate));
+    setCustomZones(loadSavedCustomZones(ds.sessionDate));
     setPositions([]);
-    setCustomZones([]);
+    setPendingOrders([]);
+    setDrillCalls([]);
+    setPickedPrices({});
+    setPickPriceMode(null);
     setPinnedZoneIds(new Set());
     setIsPlaying(false);
 
-    // Position replay cleanly at ~35 minutes into Tokyo open (or first available bar near asiaOpenTs)
-    const targetStart = ds.asiaOpenTs + 35 * 60_000;
+    // Position replay at ~45 min into Tokyo open so footprints/CVD have clean initial context
+    const targetStart = ds.asiaOpenTs + 45 * 60_000;
     const m5 = ds.m5Candles;
     if (m5.length > 0) {
       const candidate =
@@ -131,7 +173,9 @@ export function BacktesterApp() {
       setLoading(true);
       setLoadError(null);
       try {
-        const qs = sessionDate ? `?sessionDate=${encodeURIComponent(sessionDate)}` : "";
+        const qs = sessionDate
+          ? `?sessionDate=${encodeURIComponent(sessionDate)}`
+          : "";
         const res = await fetch(`/api/market/${preset}${qs}`, {
           cache: "no-store",
         });
@@ -150,10 +194,29 @@ export function BacktesterApp() {
     [applyDataset]
   );
 
-  // Initial load: real Kraken PAXG/USD tick-by-tick gold tape
+  // Initial load: real Kraken PAXG/USD weekday Asia session tape
   useEffect(() => {
     fetchFeed("paxg");
   }, [fetchFeed]);
+
+  // Persist Premarket Plan & Custom Zones automatically
+  const updatePlan = useCallback((next: PremarketPlan) => {
+    setPlan(next);
+    savePlanForSession(next);
+  }, []);
+
+  const updateCustomZones = useCallback(
+    (updater: (prev: KeyLevelZone[]) => KeyLevelZone[]) => {
+      setCustomZones((prev) => {
+        const next = updater(prev);
+        if (dataset?.sessionDate) {
+          saveCustomZonesForSession(dataset.sessionDate, next);
+        }
+        return next;
+      });
+    },
+    [dataset?.sessionDate]
+  );
 
   // Strict NO-LOOKAHEAD filtered views up to replayTs
   const visibleH1 = useMemo(
@@ -217,13 +280,12 @@ export function BacktesterApp() {
     });
   }, [dataset, replayTs]);
 
-  // Combine auto-detected zones + custom drawn zones + pin state
   const allZones = useMemo(() => {
     const merged = [...profiles.autoZones, ...customZones].map((z) => ({
       ...z,
-      pinned: pinnedZoneIds.has(z.id) || z.kind === "stacked" || z.kind === "custom",
+      pinned:
+        pinnedZoneIds.has(z.id) || z.kind === "stacked" || z.kind === "custom",
     }));
-    // Keep zones reasonably near current price first
     return merged.sort((a, b) => {
       const distA = Math.abs((a.low + a.high) / 2 - currentPrice);
       const distB = Math.abs((b.low + b.high) / 2 - currentPrice);
@@ -237,7 +299,12 @@ export function BacktesterApp() {
     }
   }, [activeZoneId, allZones]);
 
-  // Real Footprint & Big Trades strictly from real visible ticks
+  const activeZone = useMemo(
+    () => allZones.find((z) => z.id === activeZoneId) ?? allZones[0] ?? null,
+    [allZones, activeZoneId]
+  );
+
+  // Real Footprint & Big Trades strictly from visible real ticks
   const footprintSuite = useMemo(() => {
     if (!dataset?.capabilities.hasRealAggressorTape) {
       return {
@@ -251,13 +318,15 @@ export function BacktesterApp() {
       intervalMs: 300_000,
       priceStep: fpStep,
       imbalanceRatio: 3.0,
+      bigTradeLargeThreshold: customBigLarge ?? undefined,
+      bigTradeWhaleThreshold: customBigWhale ?? undefined,
     });
-  }, [dataset, visibleTicks, fpStep]);
+  }, [dataset, visibleTicks, fpStep, customBigLarge, customBigWhale]);
 
   const vwapM5 = useMemo(() => computeSessionVwap(visibleM5), [visibleM5]);
   const vwapM1 = useMemo(() => computeSessionVwap(visibleM1), [visibleM1]);
 
-  // Journal helpers
+  // Journal persistence
   const persistRep = useCallback(
     (rep: SimRepLog) => {
       setReps((prev) => {
@@ -265,7 +334,9 @@ export function BacktesterApp() {
         saveJournalReps(next);
         return next;
       });
-      flashToast(`Logged rep to Sim Rep Journal (${rep.model === "no_trade" ? "No Trade" : `${rep.outcomeR >= 0 ? "+" : ""}${rep.outcomeR}R`})`);
+      flashToast(
+        `Logged rep (${rep.model === "no_trade" ? "No Trade" : `${rep.outcomeR >= 0 ? "+" : ""}${rep.outcomeR}R`})`
+      );
     },
     [flashToast]
   );
@@ -278,7 +349,6 @@ export function BacktesterApp() {
     });
   }, []);
 
-  // Close position helper + auto-log to Sim Rep Journal
   const closePosition = useCallback(
     (id: string, exitPrice: number, reason: SimPosition["exitReason"]) => {
       setPositions((prev) =>
@@ -296,7 +366,6 @@ export function BacktesterApp() {
             (p.riskDollars > 0 ? netPnl / p.riskDollars : 0).toFixed(2)
           );
 
-          // Automatically record to Sim Rep Journal so zero reps are lost
           if (dataset) {
             persistRep({
               id: `rep-${Date.now()}`,
@@ -318,6 +387,8 @@ export function BacktesterApp() {
               outcomeR: rMult,
               pnlDollars: netPnl,
               entryPrice: p.entryPriceExec,
+              triggerPrice: p.triggerPriceExec,
+              slippagePts: p.slippagePts,
               stopPrice: p.stopPriceExec,
               targetPrice: p.t2PriceExec,
               ruleViolations: p.warnings.map((w) => w.code),
@@ -340,7 +411,57 @@ export function BacktesterApp() {
     [dataset, persistRep, replayTs, visibleM1.length]
   );
 
-  // Check Stop / T1 / T2 hits whenever replay steps forward to a new bar
+  // Evaluate Working Pending Orders (Section 8: trigger fill / slippage / invalidation auto-cancel)
+  useEffect(() => {
+    if (pendingOrders.length === 0 || visibleM5.length === 0) return;
+    const latestBar = visibleM5[visibleM5.length - 1];
+    const hasOpenPos = positions.some((p) => p.status === "open");
+
+    for (const ord of pendingOrders) {
+      const ev = evaluatePendingOrderOnBar(ord, latestBar);
+      if (ev.action === "cancelled_invalidated") {
+        setPendingOrders((prev) => prev.filter((o) => o.id !== ord.id));
+        setIsPlaying(false);
+        flashToast(ev.reason ?? "Working order auto-cancelled on invalidation.");
+        break;
+      }
+      if (ev.action === "filled" && !hasOpenPos && ev.fillPriceExec !== undefined) {
+        setPendingOrders((prev) => prev.filter((o) => o.id !== ord.id));
+        const filledPos: SimPosition = {
+          id: `pos-${Date.now()}`,
+          side: ord.side,
+          orderType: ord.orderType,
+          triggerPriceExec: ord.triggerPriceExec,
+          slippagePts: ev.slippagePts ?? 0,
+          model: ord.model,
+          scenario: ord.scenario,
+          setupTag: ord.setupTag,
+          contract: ord.contract,
+          entryPriceGC: ev.fillPriceExec,
+          entryPriceExec: ev.fillPriceExec,
+          stopPriceGC: ord.stopPriceGC,
+          stopPriceExec: ord.stopPriceExec,
+          t1PriceExec: ord.t1PriceExec,
+          t2PriceExec: ord.t2PriceExec,
+          contracts: ord.contracts,
+          riskDollars: ord.riskDollars,
+          commissionDollars: ord.commissionDollars,
+          openedAtTs: latestBar.ts,
+          status: "open",
+          entryTiming: ord.entryTiming,
+          warnings: ord.warnings,
+          zoneId: ord.zoneId,
+          note: ord.note,
+        };
+        setPositions((prev) => [...prev, filledPos]);
+        setIsPlaying(false);
+        flashToast(ev.reason ?? `Filled @ ${ev.fillPriceExec.toFixed(2)}`);
+        break;
+      }
+    }
+  }, [replayTs, pendingOrders, positions, visibleM5, flashToast]);
+
+  // Evaluate Open Position Stop / T1 / T2 hits
   useEffect(() => {
     const openPos = positions.find((p) => p.status === "open");
     if (!openPos || visibleM5.length === 0) return;
@@ -362,7 +483,9 @@ export function BacktesterApp() {
         setPositions((prev) =>
           prev.map((p) => (p.id === openPos.id ? { ...p, t1Hit: true } : p))
         );
-        flashToast(`T1 (${openPos.t1PriceExec.toFixed(2)}) reached! Consider moving stop to BE.`);
+        flashToast(
+          `T1 (${openPos.t1PriceExec.toFixed(2)}) reached! Consider moving stop to BE.`
+        );
       }
     } else {
       if (latestBar.high >= openPos.stopPriceExec) {
@@ -379,12 +502,41 @@ export function BacktesterApp() {
         setPositions((prev) =>
           prev.map((p) => (p.id === openPos.id ? { ...p, t1Hit: true } : p))
         );
-        flashToast(`T1 (${openPos.t1PriceExec.toFixed(2)}) reached! Consider moving stop to BE.`);
+        flashToast(
+          `T1 (${openPos.t1PriceExec.toFixed(2)}) reached! Consider moving stop to BE.`
+        );
       }
     }
   }, [replayTs, positions, visibleM5, closePosition, flashToast]);
 
-  // Replay stepping helpers
+  // Auto-grade ungraded Blind Drill calls once +6 M5 bars elapse
+  useEffect(() => {
+    const hasUngraded = drillCalls.some((c) => !c.graded);
+    if (!hasUngraded || visibleM5.length === 0) return;
+    let changed = false;
+    const next = drillCalls.map((c) => {
+      if (c.graded) return c;
+      const res = gradeDrillCall(c, visibleM5);
+      if (res) {
+        changed = true;
+        return { ...c, graded: res };
+      }
+      return c;
+    });
+    if (changed) {
+      setDrillCalls(next);
+      const newest = next.find((c) => c.graded);
+      if (newest?.graded) {
+        flashToast(
+          newest.graded.correct
+            ? `Drill Correct: ${newest.graded.actualStatus.toUpperCase()} at ${newest.zoneLabel}`
+            : `Drill Mismatch: tape showed ${newest.graded.actualStatus.toUpperCase()}`
+        );
+      }
+    }
+  }, [replayTs, drillCalls, visibleM5, flashToast]);
+
+  // Replay stepping
   const stepM5 = useCallback(
     (deltaBars: number) => {
       if (!dataset || dataset.m5Candles.length === 0) return;
@@ -430,14 +582,15 @@ export function BacktesterApp() {
       );
       if (hitZone) {
         setActiveZoneId(hitZone.id);
-        flashToast(`Level touch at ${hitZone.label} (${formatPTTime(nextBar.ts)} PT)`);
+        flashToast(
+          `Level touch at ${hitZone.label} (${formatPTTime(nextBar.ts)} PT)`
+        );
       }
     } else {
       flashToast("No further level touches in this Asia session.");
     }
   }, [dataset, allZones, replayTs, flashToast]);
 
-  // Playback timer
   useEffect(() => {
     if (!isPlaying) return;
     const id = setInterval(() => stepM5(1), playSpeedMs);
@@ -461,6 +614,9 @@ export function BacktesterApp() {
         stepM5(-1);
       } else if (e.key.toLowerCase() === "z") {
         setDrawZoneMode((d) => !d);
+      } else if (e.key === "Escape") {
+        setPickPriceMode(null);
+        setDrawZoneMode(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -479,7 +635,9 @@ export function BacktesterApp() {
     const curIdx = slice.filter((c) => c.ts <= replayTs).length;
     return {
       minTs: slice[0]?.ts ?? dataset.m5Candles[0].ts,
-      maxTs: slice[slice.length - 1]?.ts ?? dataset.m5Candles[dataset.m5Candles.length - 1].ts,
+      maxTs:
+        slice[slice.length - 1]?.ts ??
+        dataset.m5Candles[dataset.m5Candles.length - 1].ts,
       currentIdx: curIdx,
       total: slice.length,
     };
@@ -496,11 +654,21 @@ export function BacktesterApp() {
       touchCount: 0,
       pinned: true,
     };
-    setCustomZones((prev) => [...prev, newZone]);
+    updateCustomZones((prev) => [...prev, newZone]);
     setActiveZoneId(newZone.id);
     setDrawZoneMode(false);
-    flashToast(`Marked custom zone ${low.toFixed(2)} - ${high.toFixed(2)}`);
+    flashToast(`Saved custom zone ${low.toFixed(2)} - ${high.toFixed(2)}`);
   };
+
+  const handleChartPricePick = (price: number) => {
+    if (!pickPriceMode) return;
+    setPickedPrices((prev) => ({ ...prev, [pickPriceMode]: price }));
+    flashToast(`Set ${pickPriceMode.toUpperCase()} to ${price.toFixed(2)} from chart`);
+    setPickPriceMode(null);
+  };
+
+  const latestFootprint =
+    footprintSuite.bars[footprintSuite.bars.length - 1] ?? null;
 
   return (
     <div className="flex min-h-screen flex-col bg-[#07090e] text-slate-100">
@@ -521,7 +689,6 @@ export function BacktesterApp() {
             </div>
           </div>
 
-          {/* Primary Navigation Tabs */}
           <nav className="ml-2 flex items-center gap-1 rounded-lg border border-[#1c2436] bg-[#070a11] p-0.5 text-xs">
             {(
               [
@@ -552,8 +719,8 @@ export function BacktesterApp() {
           </nav>
         </div>
 
-        {/* Right Controls: Feed Switcher, Session Date, Heatmap Toggle, Upload */}
-        <div className="flex flex-wrap items-center gap-2 text-xs">
+        {/* Right Controls */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
           <div className="flex items-center rounded-md border border-[#1c2436] bg-[#070a11] p-0.5 text-[11px]">
             <button
               type="button"
@@ -595,9 +762,9 @@ export function BacktesterApp() {
               className="rounded border border-[#26324a] bg-[#0c121e] px-2 py-1 font-mono-num text-[11px] text-slate-200"
               title="Select past Asia session date (PT)"
             >
-              {availableSessions.map((d) => (
+              {availableSessions.map((d, idx) => (
                 <option key={d} value={d}>
-                  Asia {d}
+                  {blindDate ? `Blind Session #${idx + 1}` : `Asia ${d}`}
                 </option>
               ))}
             </select>
@@ -605,17 +772,45 @@ export function BacktesterApp() {
 
           <button
             type="button"
+            onClick={() => setBlindDate((b) => !b)}
+            className={`flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium transition ${
+              blindDate
+                ? "border-violet-500/50 bg-violet-500/15 text-violet-200"
+                : "border-[#1c2436] bg-[#0c111b] text-slate-400 hover:text-slate-200"
+            }`}
+            title="Hide exact session date for blind practice"
+          >
+            {blindDate ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            Blind
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDrillMode((d) => !d)}
+            className={`flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium transition ${
+              drillMode
+                ? "border-amber-500/60 bg-amber-500/20 text-amber-200"
+                : "border-[#1c2436] bg-[#0c111b] text-slate-400 hover:text-slate-200"
+            }`}
+            title="Blind Level-Touch Drill Mode (commit Model 1/Model 2/No-Trade before revealing +30m)"
+          >
+            <Crosshair className="h-3.5 w-3.5" />
+            Drill {drillMode ? "ON" : "OFF"}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setCsvModalOpen(true)}
-            className="flex items-center gap-1 rounded border border-[#26324a] bg-[#101829] px-2.5 py-1 text-[11px] font-medium text-slate-200 hover:bg-[#19253d]"
+            className="flex items-center gap-1 rounded border border-[#26324a] bg-[#101829] px-2 py-1 text-[11px] font-medium text-slate-200 hover:bg-[#19253d]"
           >
             <Upload className="h-3.5 w-3.5 text-sky-400" />
-            Databento / CSV
+            CSV
           </button>
 
           <button
             type="button"
             onClick={() => setShowHeatmap((v) => !v)}
-            className={`flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] font-medium transition ${
+            className={`flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium transition ${
               showHeatmap
                 ? "border-orange-500/50 bg-orange-500/15 text-orange-300"
                 : "border-[#1c2436] bg-[#0c111b] text-slate-400 hover:text-slate-200"
@@ -628,7 +823,7 @@ export function BacktesterApp() {
         </div>
       </header>
 
-      {/* Data Provenance & Capability Strip (Always honest about feed source & limits) */}
+      {/* Data Provenance Strip */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#141c2c] bg-[#090d15] px-3 py-1 text-[11px]">
         <div className="flex flex-wrap items-center gap-2">
           <Database className="h-3.5 w-3.5 text-slate-500" />
@@ -657,11 +852,6 @@ export function BacktesterApp() {
                   REAL L2 BOOK
                 </span>
               )}
-              {dataset.capabilities.caveat && (
-                <span className="hidden xl:inline text-slate-400 truncate max-w-2xl">
-                  · {dataset.capabilities.caveat}
-                </span>
-              )}
             </>
           ) : (
             <span className="text-rose-400">{loadError ?? "No dataset loaded"}</span>
@@ -672,7 +862,9 @@ export function BacktesterApp() {
             <span>
               Replay Clock:{" "}
               <strong className="text-sky-300">
-                {formatPTTime(replayTs, true)} PT
+                {blindDate
+                  ? `${formatPTTime(replayTs)} PT`
+                  : `${formatPTTime(replayTs, true)} PT`}
               </strong>
             </span>
             <span>
@@ -685,7 +877,7 @@ export function BacktesterApp() {
         )}
       </div>
 
-      {/* Toast Notification */}
+      {/* Toast */}
       {toastMsg && (
         <div className="fixed bottom-16 right-4 z-50 rounded-lg border border-sky-500/50 bg-[#0e1729] px-3.5 py-2 text-xs font-medium text-sky-200 shadow-xl">
           {toastMsg}
@@ -720,7 +912,7 @@ export function BacktesterApp() {
         )}
 
         {dataset && activeTab === "premarket" && (
-          <div className="grid grid-cols-1 gap-3 p-3 xl:grid-cols-12">
+          <div className="grid grid-cols-1 gap-3 p-3 pb-20 xl:grid-cols-12">
             <div className="space-y-3 xl:col-span-8">
               <div className="flex items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-1.5">
@@ -754,7 +946,7 @@ export function BacktesterApp() {
 
               <CandleProfileChart
                 title="H1 Bias & Multi-Day Volume Profile"
-                subtitle={`${dataset.instrument} · Strict premarket cutoff ${formatPTTime(replayTs, true)} PT`}
+                subtitle={`${dataset.instrument} · Strict premarket cutoff ${formatPTTime(replayTs, !blindDate)} PT`}
                 candles={visibleH1}
                 profiles={profiles}
                 activeProfileMode={profileDisplayMode}
@@ -789,7 +981,7 @@ export function BacktesterApp() {
             <div className="xl:col-span-4">
               <PremarketPanel
                 plan={plan}
-                onChangePlan={setPlan}
+                onChangePlan={updatePlan}
                 profiles={profiles}
                 zones={allZones}
                 activeZoneId={activeZoneId}
@@ -803,7 +995,7 @@ export function BacktesterApp() {
                   });
                 }}
                 onDeleteZone={(id) =>
-                  setCustomZones((prev) => prev.filter((z) => z.id !== id))
+                  updateCustomZones((prev) => prev.filter((z) => z.id !== id))
                 }
                 drawZoneMode={drawZoneMode}
                 onToggleDrawZone={() => setDrawZoneMode((v) => !v)}
@@ -817,46 +1009,190 @@ export function BacktesterApp() {
           <div className="grid grid-cols-1 gap-3 p-3 pb-20 xl:grid-cols-12">
             {/* Charts Grid (9 cols) */}
             <div className="space-y-3 xl:col-span-9">
-              {/* Row 1: M5 Candles + Profile (left) AND M5 Footprint Bid x Ask / Delta (right) */}
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-[11px] px-0.5">
-                    <div className="flex items-center gap-1">
-                      {(["developing", "pd", "composite", "pw"] as const).map(
-                        (m) => (
-                          <button
-                            key={m}
-                            type="button"
-                            onClick={() => setProfileDisplayMode(m)}
-                            className={`rounded px-1.5 py-0.5 text-[10px] uppercase border ${
-                              profileDisplayMode === m
-                                ? "bg-sky-500/20 border-sky-500/50 text-sky-300"
-                                : "bg-[#0c1018] border-[#1c2436] text-slate-400"
-                            }`}
-                          >
-                            {m}
-                          </button>
-                        )
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setDrawZoneMode((d) => !d)}
-                        className={`ml-1 rounded px-1.5 py-0.5 text-[10px] border ${
-                          drawZoneMode
-                            ? "bg-teal-500/20 border-teal-400 text-teal-200"
-                            : "bg-[#0c1018] border-[#1c2436] text-slate-400"
-                        }`}
-                      >
-                        {drawZoneMode ? "Drawing..." : "+ Zone (Z)"}
-                      </button>
-                    </div>
-                    {dataset.capabilities.hasRealAggressorTape && (
-                      <span className="font-mono-num text-[10px] text-slate-400">
-                        Asia BigTrades ≥ {footprintSuite.calibratedLargeThreshold}
-                      </span>
-                    )}
+              {/* Optional Blind Level-Touch Drill Mode Card */}
+              {drillMode && (
+                <DrillModeCard
+                  activeZone={activeZone}
+                  replayTs={replayTs}
+                  drillCalls={drillCalls}
+                  onLockCall={(call) => {
+                    setDrillCalls((prev) => [call, ...prev]);
+                    flashToast(`Locked Drill Call at ${call.zoneLabel}. Step +30m to grade.`);
+                  }}
+                  onStep6Bars={() => stepM5(6)}
+                />
+              )}
+
+              {/* Replay Sub-Toolbar: Layout Presets, Profile Selector, Footprint Step, Tape Toggle */}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] px-0.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="flex items-center gap-1 text-slate-500">
+                    <LayoutGrid className="h-3 w-3" /> Layout:
+                  </span>
+                  {(
+                    [
+                      { id: "standard", label: "Standard (4-Pane)" },
+                      { id: "dual_fp", label: "Dual FP (Bid×Ask + Delta)" },
+                      { id: "tape_focus", label: "M5 + Footprint Focus" },
+                    ] as const
+                  ).map((l) => (
+                    <button
+                      key={l.id}
+                      type="button"
+                      onClick={() => setReplayLayout(l.id)}
+                      className={`rounded px-2 py-0.5 text-[10px] font-medium border ${
+                        replayLayout === l.id
+                          ? "bg-sky-500/20 border-sky-500/50 text-sky-300"
+                          : "bg-[#0c1018] border-[#1c2436] text-slate-400"
+                      }`}
+                    >
+                      {l.label}
+                    </button>
+                  ))}
+
+                  <span className="ml-1 text-slate-600">|</span>
+                  {(["developing", "pd", "composite", "pw"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setProfileDisplayMode(m)}
+                      className={`rounded px-1.5 py-0.5 text-[10px] uppercase border ${
+                        profileDisplayMode === m
+                          ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                          : "bg-[#0c1018] border-[#1c2436] text-slate-400"
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setDrawZoneMode((d) => !d)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] border ${
+                      drawZoneMode
+                        ? "bg-teal-500/20 border-teal-400 text-teal-200"
+                        : "bg-[#0c1018] border-[#1c2436] text-slate-400"
+                    }`}
+                  >
+                    {drawZoneMode ? "Drawing..." : "+ Zone (Z)"}
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-slate-500">FP Step:</span>
+                  {[0.25, 0.5, 1.0, 2.0].map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setFpStep(st)}
+                      className={`rounded px-1.5 py-0.5 font-mono-num text-[10px] border ${
+                        fpStep === st
+                          ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                          : "bg-[#0c1018] border-[#1c2436] text-slate-400"
+                      }`}
+                    >
+                      ${st.toFixed(2)}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setShowTape((v) => !v)}
+                    className={`ml-1 rounded px-2 py-0.5 text-[10px] border ${
+                      showTape
+                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                        : "bg-[#0c1018] border-[#1c2436] text-slate-400"
+                    }`}
+                  >
+                    Tape {showTape ? "ON" : "OFF"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Layout A: Standard 4-pane */}
+              {replayLayout === "standard" && (
+                <>
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <CandleProfileChart
+                      title="M5 Setup Chart + Profile + VWAP + BigTrades"
+                      candles={visibleM5}
+                      vwapSeries={vwapM5}
+                      profiles={profiles}
+                      activeProfileMode={profileDisplayMode}
+                      nakedPocs={profiles.nakedPocs}
+                      zones={allZones}
+                      activeZoneId={activeZoneId}
+                      bigTrades={footprintSuite.allBigTrades}
+                      positions={positions}
+                      pendingOrders={pendingOrders}
+                      asiaOpenTs={dataset.asiaOpenTs}
+                      drawZoneMode={drawZoneMode}
+                      pickPriceMode={pickPriceMode}
+                      onDrawZoneComplete={handleDrawZoneComplete}
+                      onSelectZone={setActiveZoneId}
+                      onClickPrice={handleChartPricePick}
+                      hoverTs={hoverTs}
+                      onHoverTs={setHoverTs}
+                      heightClass="h-[365px]"
+                      defaultVisibleBars={60}
+                    />
+
+                    <FootprintChart
+                      bars={footprintSuite.bars}
+                      hasRealAggressorTape={
+                        dataset.capabilities.hasRealAggressorTape
+                      }
+                      zones={allZones}
+                      activeZoneId={activeZoneId}
+                      priceStep={fpStep}
+                      mode={footprintMode}
+                      onModeChange={setFootprintMode}
+                      onSwitchToPaxg={() => {
+                        setFeedPreset("paxg");
+                        fetchFeed("paxg");
+                      }}
+                      onOpenCsvModal={() => setCsvModalOpen(true)}
+                      heightClass="h-[365px]"
+                    />
                   </div>
 
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <CandleProfileChart
+                      title="M1 Execution Timing (1OZ $0.25 Grid)"
+                      subtitle={
+                        visibleM1.length > 0
+                          ? "Click crosshair in ticket to snap stops/triggers"
+                          : "M1 unavailable for dates > 5d old on GC=F; showing M5"
+                      }
+                      candles={visibleM1.length > 0 ? visibleM1 : visibleM5}
+                      vwapSeries={visibleM1.length > 0 ? vwapM1 : vwapM5}
+                      zones={allZones}
+                      activeZoneId={activeZoneId}
+                      positions={positions}
+                      pendingOrders={pendingOrders}
+                      pickPriceMode={pickPriceMode}
+                      onSelectZone={setActiveZoneId}
+                      onClickPrice={handleChartPricePick}
+                      show1OZGrid
+                      hoverTs={hoverTs}
+                      onHoverTs={setHoverTs}
+                      heightClass="h-[225px]"
+                      defaultVisibleBars={65}
+                    />
+
+                    <CvdChart
+                      bars={footprintSuite.bars}
+                      hasRealAggressorTape={
+                        dataset.capabilities.hasRealAggressorTape
+                      }
+                      heightClass="h-[225px]"
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Layout B: Dual Footprint (ATAS Friend Template: M5 Bid×Ask + M5 Delta side by side) */}
+              {replayLayout === "dual_fp" && (
+                <>
                   <CandleProfileChart
                     title="M5 Setup Chart + Profile + VWAP + BigTrades"
                     candles={visibleM5}
@@ -868,42 +1204,66 @@ export function BacktesterApp() {
                     activeZoneId={activeZoneId}
                     bigTrades={footprintSuite.allBigTrades}
                     positions={positions}
+                    pendingOrders={pendingOrders}
                     asiaOpenTs={dataset.asiaOpenTs}
                     drawZoneMode={drawZoneMode}
+                    pickPriceMode={pickPriceMode}
                     onDrawZoneComplete={handleDrawZoneComplete}
                     onSelectZone={setActiveZoneId}
+                    onClickPrice={handleChartPricePick}
                     hoverTs={hoverTs}
                     onHoverTs={setHoverTs}
-                    heightClass="h-[365px]"
-                    defaultVisibleBars={60}
+                    heightClass="h-[280px]"
+                    defaultVisibleBars={75}
                   />
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-[11px] px-0.5">
-                    <span className="text-[10px] text-slate-400">
-                      Footprint Row Aggregation:
-                    </span>
-                    <div className="flex items-center gap-1">
-                      {[0.25, 0.5, 1.0, 2.0].map((st) => (
-                        <button
-                          key={st}
-                          type="button"
-                          onClick={() => setFpStep(st)}
-                          className={`rounded px-1.5 py-0.5 font-mono-num text-[10px] border ${
-                            fpStep === st
-                              ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
-                              : "bg-[#0c1018] border-[#1c2436] text-slate-400"
-                          }`}
-                        >
-                          ${st.toFixed(2)}
-                        </button>
-                      ))}
-                    </div>
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <FootprintChart
+                      title="M5 Footprint (Bid × Ask · 300% Imbalances)"
+                      bars={footprintSuite.bars}
+                      hasRealAggressorTape={
+                        dataset.capabilities.hasRealAggressorTape
+                      }
+                      zones={allZones}
+                      activeZoneId={activeZoneId}
+                      priceStep={fpStep}
+                      mode="bid_ask"
+                      onSwitchToPaxg={() => {
+                        setFeedPreset("paxg");
+                        fetchFeed("paxg");
+                      }}
+                      onOpenCsvModal={() => setCsvModalOpen(true)}
+                      heightClass="h-[340px]"
+                    />
+                    <FootprintChart
+                      title="M5 Delta Clusters (DeltaStrength + CVD)"
+                      bars={footprintSuite.bars}
+                      hasRealAggressorTape={
+                        dataset.capabilities.hasRealAggressorTape
+                      }
+                      zones={allZones}
+                      activeZoneId={activeZoneId}
+                      priceStep={fpStep}
+                      mode="delta"
+                      onSwitchToPaxg={() => {
+                        setFeedPreset("paxg");
+                        fetchFeed("paxg");
+                      }}
+                      onOpenCsvModal={() => setCsvModalOpen(true)}
+                      heightClass="h-[340px]"
+                    />
                   </div>
+                </>
+              )}
+
+              {/* Layout C: M5 + Full-Width Footprint Focus */}
+              {replayLayout === "tape_focus" && (
+                <>
                   <FootprintChart
+                    title="M5 Footprint Full-Width Study View"
                     bars={footprintSuite.bars}
-                    hasRealAggressorTape={dataset.capabilities.hasRealAggressorTape}
+                    hasRealAggressorTape={
+                      dataset.capabilities.hasRealAggressorTape
+                    }
                     zones={allZones}
                     activeZoneId={activeZoneId}
                     priceStep={fpStep}
@@ -914,43 +1274,54 @@ export function BacktesterApp() {
                       fetchFeed("paxg");
                     }}
                     onOpenCsvModal={() => setCsvModalOpen(true)}
-                    heightClass="h-[365px]"
+                    heightClass="h-[410px]"
+                    defaultVisibleBars={14}
                   />
-                </div>
-              </div>
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <CandleProfileChart
+                      title="M5 Setup + Profile"
+                      candles={visibleM5}
+                      vwapSeries={vwapM5}
+                      profiles={profiles}
+                      activeProfileMode={profileDisplayMode}
+                      zones={allZones}
+                      activeZoneId={activeZoneId}
+                      bigTrades={footprintSuite.allBigTrades}
+                      positions={positions}
+                      pendingOrders={pendingOrders}
+                      pickPriceMode={pickPriceMode}
+                      onSelectZone={setActiveZoneId}
+                      onClickPrice={handleChartPricePick}
+                      heightClass="h-[225px]"
+                      defaultVisibleBars={50}
+                    />
+                    <CvdChart
+                      bars={footprintSuite.bars}
+                      hasRealAggressorTape={
+                        dataset.capabilities.hasRealAggressorTape
+                      }
+                      heightClass="h-[225px]"
+                    />
+                  </div>
+                </>
+              )}
 
-              {/* Row 2: M1 1OZ Execution Chart + CVD Pane */}
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                <CandleProfileChart
-                  title="M1 Execution Timing (1OZ $0.25 Grid)"
-                  subtitle={
-                    visibleM1.length > 0
-                      ? "First valid pullback entry timing"
-                      : "M1 unavailable for dates > 5d old on GC=F; showing M5"
-                  }
-                  candles={visibleM1.length > 0 ? visibleM1 : visibleM5}
-                  vwapSeries={visibleM1.length > 0 ? vwapM1 : vwapM5}
-                  zones={allZones}
-                  activeZoneId={activeZoneId}
-                  positions={positions}
-                  onSelectZone={setActiveZoneId}
-                  show1OZGrid
-                  hoverTs={hoverTs}
-                  onHoverTs={setHoverTs}
-                  heightClass="h-[225px]"
-                  defaultVisibleBars={65}
+              {/* Time & Sales Tape + BigTrades Threshold Calibrator */}
+              {showTape && (
+                <TapePanel
+                  ticks={visibleTicks}
+                  latestFootprint={latestFootprint}
+                  hasRealAggressorTape={dataset.capabilities.hasRealAggressorTape}
+                  largeThreshold={footprintSuite.calibratedLargeThreshold}
+                  whaleThreshold={footprintSuite.calibratedWhaleThreshold}
+                  customLarge={customBigLarge}
+                  customWhale={customBigWhale}
+                  onChangeCustomLarge={setCustomBigLarge}
+                  onChangeCustomWhale={setCustomBigWhale}
                 />
+              )}
 
-                <div className="flex flex-col gap-3">
-                  <CvdChart
-                    bars={footprintSuite.bars}
-                    hasRealAggressorTape={dataset.capabilities.hasRealAggressorTape}
-                    heightClass="h-[225px]"
-                  />
-                </div>
-              </div>
-
-              {/* Row 3 (Optional): L2 Depth Heatmap — OFF by default */}
+              {/* Optional L2 Depth Heatmap — OFF by default */}
               {showHeatmap && (
                 <HeatmapChart
                   l2Snapshots={visibleL2}
@@ -975,6 +1346,7 @@ export function BacktesterApp() {
                 previousDayProfile={profiles.previousDay}
                 plan={plan}
                 positions={positions}
+                pendingOrders={pendingOrders}
                 accountBalance={accountBalance}
                 onAccountBalanceChange={setAccountBalance}
                 onOpenPosition={(pos) => {
@@ -982,6 +1354,16 @@ export function BacktesterApp() {
                   flashToast(
                     `Filled ${pos.side.toUpperCase()} ${pos.contracts}× ${pos.contract} @ ${pos.entryPriceExec.toFixed(2)}`
                   );
+                }}
+                onPlacePendingOrder={(ord) => {
+                  setPendingOrders([ord]);
+                  flashToast(
+                    `Working ${ord.side.toUpperCase()} ${ord.orderType.toUpperCase()} @ ${ord.triggerPriceExec.toFixed(2)} (auto-cancels beyond ${ord.invalidationPriceExec.toFixed(2)})`
+                  );
+                }}
+                onCancelPendingOrder={(id) => {
+                  setPendingOrders((prev) => prev.filter((o) => o.id !== id));
+                  flashToast("Working order cancelled.");
                 }}
                 onClosePosition={closePosition}
                 onMoveStopToBE={(id) => {
@@ -1021,6 +1403,16 @@ export function BacktesterApp() {
                     note,
                   });
                 }}
+                pickPriceMode={pickPriceMode}
+                onSetPickPriceMode={setPickPriceMode}
+                pickedPrices={pickedPrices}
+                onClearPickedPrice={(field) =>
+                  setPickedPrices((prev) => {
+                    const copy = { ...prev };
+                    delete copy[field];
+                    return copy;
+                  })
+                }
               />
             </div>
           </div>

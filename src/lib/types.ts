@@ -7,6 +7,7 @@ export type DataSourceKind =
   | "custom_ohlcv";
 
 export type ContractType = "1OZ" | "MGC" | "GC";
+export type OrderType = "stop" | "limit" | "market";
 
 export interface MarketCapabilities {
   hasRealAggressorTape: boolean;
@@ -81,6 +82,7 @@ export interface FootprintBar {
   buyVol: number;
   sellVol: number;
   delta: number;
+  deltaStrengthPct: number; // (delta / totalVol) * 100 matching ATAS DeltaStrength
   maxDelta: number;
   minDelta: number;
   cumDelta: number;
@@ -205,9 +207,40 @@ export interface GuardrailWarning {
   detail: string;
 }
 
+/**
+ * Working pending order (Section 8: Buy Stop 1 tick above pullback bar high / Limit at zone).
+ * Automatically cancels if price breaks invalidationPrice before trigger fills.
+ */
+export interface PendingOrder {
+  id: string;
+  side: OrderSide;
+  orderType: Exclude<OrderType, "market">;
+  model: "model1_reversal" | "model2_continuation";
+  scenario: ScenarioNumber;
+  setupTag: SetupTag;
+  contract: ContractType;
+  triggerPriceExec: number;
+  invalidationPriceExec: number; // Absorption zone low (long) or high (short)
+  stopPriceGC: number;
+  stopPriceExec: number;
+  t1PriceExec: number;
+  t2PriceExec: number;
+  contracts: number;
+  riskDollars: number;
+  commissionDollars: number;
+  placedAtTs: number;
+  entryTiming: EntryTiming;
+  warnings: GuardrailWarning[];
+  zoneId?: string;
+  note: string;
+}
+
 export interface SimPosition {
   id: string;
   side: OrderSide;
+  orderType?: OrderType;
+  triggerPriceExec?: number; // For tracking stop-order slippage (Section 8)
+  slippagePts?: number;
   model: "model1_reversal" | "model2_continuation";
   scenario: ScenarioNumber;
   setupTag: SetupTag;
@@ -236,6 +269,24 @@ export interface SimPosition {
   note: string;
 }
 
+export interface DrillCall {
+  id: string;
+  calledAtTs: number;
+  zoneId: string;
+  zoneLabel: string;
+  zoneLow: number;
+  zoneHigh: number;
+  predictedCall: ModelType;
+  scenario: ScenarioNumber;
+  reason: string;
+  graded?: {
+    actualStatus: "rejection" | "acceptance" | "unclear";
+    correct: boolean;
+    barsElapsed: number;
+    summary: string;
+  };
+}
+
 export interface SimRepLog {
   id: string;
   createdAt: string;
@@ -256,6 +307,8 @@ export interface SimRepLog {
   outcomeR: number;
   pnlDollars?: number;
   entryPrice?: number;
+  triggerPrice?: number;
+  slippagePts?: number;
   stopPrice?: number;
   targetPrice?: number;
   ruleViolations: string[];

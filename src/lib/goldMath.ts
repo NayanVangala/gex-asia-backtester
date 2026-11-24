@@ -1,11 +1,13 @@
 import {
   Candle,
   ContractType,
+  DrillCall,
   EntryTiming,
   FootprintBar,
   GuardrailWarning,
   KeyLevelZone,
   OrderSide,
+  PendingOrder,
   PremarketPlan,
   SimPosition,
   VolumeProfileResult,
@@ -635,4 +637,149 @@ export function getGlobexSessionDate(ts: number): string {
   if (hour >= 15) return getPTDateKey(ts);
   // Bars before 15:00 PT belong to the session that started the previous afternoon at 15:00 PT
   return getPTDateKey(ts - 16 * 3600 * 1000);
+}
+
+export interface PendingOrderEvalResult {
+  action: "still_working" | "filled" | "cancelled_invalidated";
+  fillPriceExec?: number;
+  slippagePts?: number;
+  reason?: string;
+}
+
+/**
+ * Evaluates a working Buy/Sell Stop or Limit order against a newly revealed bar (Section 8).
+ * - If price breaks absorption invalidation before filling => auto-cancel ("setup is dead").
+ * - If stop order triggers on a gap/fast bar => logs trigger vs fill slippage on 1OZ $0.25 grid.
+ */
+export function evaluatePendingOrderOnBar(
+  order: PendingOrder,
+  bar: Candle
+): PendingOrderEvalResult {
+  if (bar.ts <= order.placedAtTs) {
+    return { action: "still_working" };
+  }
+
+  const tick = CONTRACT_SPECS[order.contract].tickSize;
+
+  // 1) Check invalidation FIRST (conservative: if bar breaks absorption zone before/same bar, cancel setup)
+  if (order.side === "long" && bar.low <= order.invalidationPriceExec) {
+    return {
+      action: "cancelled_invalidated",
+      reason: `Price broke absorption low (${order.invalidationPriceExec.toFixed(2)}) before fill. Setup dead.`,
+    };
+  }
+  if (order.side === "short" && bar.high >= order.invalidationPriceExec) {
+    return {
+      action: "cancelled_invalidated",
+      reason: `Price broke absorption high (${order.invalidationPriceExec.toFixed(2)}) before fill. Setup dead.`,
+    };
+  }
+
+  // 2) Check Buy/Sell Stop trigger (Section 8: buy stop 1 tick above pullback bar high)
+  if (order.orderType === "stop") {
+    if (order.side === "long" && bar.high >= order.triggerPriceExec) {
+      // Simulate realistic fill: worse of bar open or trigger (+ optional 1-tick slip on wide range bar)
+      const baseFill = Math.max(bar.open, order.triggerPriceExec);
+      const wideBarSlip = bar.high - bar.low >= 4.0 ? tick : 0;
+      const fillExec = roundGCForContract(baseFill + wideBarSlip, order.contract, "up");
+      const slippage = Number((fillExec - order.triggerPriceExec).toFixed(4));
+      return {
+        action: "filled",
+        fillPriceExec: fillExec,
+        slippagePts: slippage,
+        reason:
+          slippage > 0
+            ? `Buy Stop triggered ${order.triggerPriceExec.toFixed(2)}, filled ${fillExec.toFixed(2)} (+${slippage.toFixed(2)}pt slip)`
+            : `Buy Stop filled cleanly @ ${fillExec.toFixed(2)}`,
+      };
+    }
+    if (order.side === "short" && bar.low <= order.triggerPriceExec) {
+      const baseFill = Math.min(bar.open, order.triggerPriceExec);
+      const wideBarSlip = bar.high - bar.low >= 4.0 ? tick : 0;
+      const fillExec = roundGCForContract(baseFill - wideBarSlip, order.contract, "down");
+      const slippage = Number((order.triggerPriceExec - fillExec).toFixed(4));
+      return {
+        action: "filled",
+        fillPriceExec: fillExec,
+        slippagePts: slippage,
+        reason:
+          slippage > 0
+            ? `Sell Stop triggered ${order.triggerPriceExec.toFixed(2)}, filled ${fillExec.toFixed(2)} (+${slippage.toFixed(2)}pt slip)`
+            : `Sell Stop filled cleanly @ ${fillExec.toFixed(2)}`,
+      };
+    }
+  }
+
+  // 3) Check Limit order fill (zero slippage if price touches limit)
+  if (order.orderType === "limit") {
+    if (order.side === "long" && bar.low <= order.triggerPriceExec) {
+      const fillExec = roundGCForContract(
+        Math.min(bar.open, order.triggerPriceExec),
+        order.contract,
+        "nearest"
+      );
+      return {
+        action: "filled",
+        fillPriceExec: fillExec,
+        slippagePts: 0,
+        reason: `Buy Limit filled @ ${fillExec.toFixed(2)} (0 slip)`,
+      };
+    }
+    if (order.side === "short" && bar.high >= order.triggerPriceExec) {
+      const fillExec = roundGCForContract(
+        Math.max(bar.open, order.triggerPriceExec),
+        order.contract,
+        "nearest"
+      );
+      return {
+        action: "filled",
+        fillPriceExec: fillExec,
+        slippagePts: 0,
+        reason: `Sell Limit filled @ ${fillExec.toFixed(2)} (0 slip)`,
+      };
+    }
+  }
+
+  return { action: "still_working" };
+}
+
+/**
+ * Grades a Blind Drill Mode call once >= 6 M5 bars (30 min) have elapsed after the touch.
+ */
+export function gradeDrillCall(
+  call: DrillCall,
+  visibleM5: Candle[]
+): DrillCall["graded"] | null {
+  const afterBars = visibleM5.filter((b) => b.ts >= call.calledAtTs);
+  if (afterBars.length < 6) return null;
+
+  const evalBars = afterBars.slice(0, 10);
+  const read = evaluateAcceptanceRejection(evalBars, {
+    low: call.zoneLow,
+    high: call.zoneHigh,
+  });
+
+  const actualStatus: "rejection" | "acceptance" | "unclear" =
+    read.status === "rejection"
+      ? "rejection"
+      : read.status === "acceptance"
+        ? "acceptance"
+        : "unclear";
+
+  const expectedModel =
+    actualStatus === "rejection"
+      ? "model1_reversal"
+      : actualStatus === "acceptance"
+        ? "model2_continuation"
+        : "no_trade";
+
+  const correct = call.predictedCall === expectedModel;
+  return {
+    actualStatus,
+    correct,
+    barsElapsed: evalBars.length,
+    summary: correct
+      ? `Spot-on read: ${actualStatus.toUpperCase()} verified over ${evalBars.length} M5 bars (${read.closesBeyondCount} closes beyond).`
+      : `Mismatch: you called ${call.predictedCall.replace(/_/g, " ")}, tape showed ${actualStatus.toUpperCase()} (${read.closesBeyondCount}/${evalBars.length} closes beyond).`,
+  };
 }

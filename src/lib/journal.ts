@@ -1,12 +1,64 @@
 import {
   EntryTiming,
+  KeyLevelZone,
   ModelType,
+  PremarketPlan,
   ScenarioNumber,
   SetupTag,
   SimRepLog,
 } from "./types";
 
 const STORAGE_KEY = "gex_asia_sim_rep_journal_v1";
+const PLAN_STORAGE_PREFIX = "gex_asia_plan_v1_";
+const ZONES_STORAGE_PREFIX = "gex_asia_zones_v1_";
+
+export function loadSavedPlan(sessionDate: string): PremarketPlan | null {
+  if (typeof window === "undefined" || !sessionDate) return null;
+  try {
+    const raw = window.localStorage.getItem(PLAN_STORAGE_PREFIX + sessionDate);
+    return raw ? (JSON.parse(raw) as PremarketPlan) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function savePlanForSession(plan: PremarketPlan): void {
+  if (typeof window === "undefined" || !plan.sessionDate) return;
+  try {
+    window.localStorage.setItem(
+      PLAN_STORAGE_PREFIX + plan.sessionDate,
+      JSON.stringify(plan)
+    );
+  } catch {
+    // ignore
+  }
+}
+
+export function loadSavedCustomZones(sessionDate: string): KeyLevelZone[] {
+  if (typeof window === "undefined" || !sessionDate) return [];
+  try {
+    const raw = window.localStorage.getItem(ZONES_STORAGE_PREFIX + sessionDate);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? (parsed as KeyLevelZone[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomZonesForSession(
+  sessionDate: string,
+  zones: KeyLevelZone[]
+): void {
+  if (typeof window === "undefined" || !sessionDate) return;
+  try {
+    window.localStorage.setItem(
+      ZONES_STORAGE_PREFIX + sessionDate,
+      JSON.stringify(zones)
+    );
+  } catch {
+    // ignore
+  }
+}
 
 export const SEED_SAMPLE_REP: SimRepLog = {
   id: "seed-test-rep-1",
@@ -273,6 +325,60 @@ export function exportJournalCSV(reps: SimRepLog[]): string {
       .map(escape)
       .join(",")
   );
+
+  return [header, ...rows].join("\n");
+}
+
+/**
+ * Formats reps as tab-separated values (TSV) with $1.00/pt 1OZ math
+ * so Nayan can paste directly into his Google Sheet Trade Log (fixing the $2.50/pt sheet bug).
+ */
+export function exportGoogleSheetTSV(reps: SimRepLog[]): string {
+  const header = [
+    "Date",
+    "Instrument",
+    "Scenario",
+    "Model",
+    "Setup",
+    "Side",
+    "Entry Timing",
+    "Entry",
+    "Trigger",
+    "Slippage (pts)",
+    "Stop",
+    "Target",
+    "1OZ Net $ ($1/pt)",
+    "Outcome (R)",
+    "Violations",
+    "Notes",
+  ].join("\t");
+
+  const rows = reps
+    .filter((r) => !r.isSample)
+    .map((r) =>
+      [
+        r.sessionDate,
+        r.instrument,
+        `#${r.scenario}`,
+        r.model === "model1_reversal"
+          ? "Model 1"
+          : r.model === "model2_continuation"
+            ? "Model 2"
+            : "No Trade",
+        r.setupTag,
+        r.side,
+        r.entryTiming,
+        r.entryPrice?.toFixed(2) ?? "",
+        r.triggerPrice?.toFixed(2) ?? "",
+        r.slippagePts !== undefined ? r.slippagePts.toFixed(2) : "",
+        r.stopPrice?.toFixed(2) ?? "",
+        r.targetPrice?.toFixed(2) ?? "",
+        r.pnlDollars !== undefined ? r.pnlDollars.toFixed(2) : "",
+        r.outcomeR.toFixed(2),
+        r.ruleViolations.join("; "),
+        r.note.replace(/\t|\n/g, " "),
+      ].join("\t")
+    );
 
   return [header, ...rows].join("\n");
 }

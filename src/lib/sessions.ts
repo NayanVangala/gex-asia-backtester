@@ -60,7 +60,11 @@ export function getAsiaSessionWindow(sessionDate: string): {
  * Generates recent weekday/Sunday Asia session date candidates (PT) going back N days.
  * COMEX GC Asia sessions run Sunday through Thursday evenings PT (skipping Friday/Saturday nights).
  */
-export function listRecentAsiaDates(count = 20, includeWeekends = false): string[] {
+export function listRecentAsiaDates(
+  count = 20,
+  includeWeekends = false,
+  skipSunday = false
+): string[] {
   const dates: string[] = [];
   const now = Date.now();
   // Start from yesterday PT so we land on a completed session by default
@@ -69,8 +73,8 @@ export function listRecentAsiaDates(count = 20, includeWeekends = false): string
     const dateKey = getPTDateKey(ts);
     const noonUtc = ptWallTimeToUtcMs(dateKey, 12, 0);
     const dow = new Date(noonUtc).getUTCDay(); // 0 Sun .. 6 Sat
-    // GC Globex has no Friday evening or Saturday evening session (5 = Fri, 6 = Sat)
     if (!includeWeekends && (dow === 5 || dow === 6)) continue;
+    if (skipSunday && dow === 0) continue;
     dates.push(dateKey);
   }
   return dates;

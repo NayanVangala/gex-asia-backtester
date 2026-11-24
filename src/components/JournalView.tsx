@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
-import { Download, Plus, Trash2 } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Check, Copy, Download, Plus, Trash2 } from "lucide-react";
 import {
   EntryTiming,
   ModelType,
@@ -11,7 +11,11 @@ import {
   SetupTag,
   SimRepLog,
 } from "@/lib/types";
-import { computeJournalStats, exportJournalCSV } from "@/lib/journal";
+import {
+  computeJournalStats,
+  exportGoogleSheetTSV,
+  exportJournalCSV,
+} from "@/lib/journal";
 
 interface JournalViewProps {
   reps: SimRepLog[];
@@ -19,6 +23,121 @@ interface JournalViewProps {
   onDeleteRep: (id: string) => void;
   currentSessionDate: string;
   currentInstrument: string;
+}
+
+function EquityCurveCanvas({ reps }: { reps: SimRepLog[] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  const series = useMemo(() => {
+    const real = reps.filter((r) => !r.isSample && r.model !== "no_trade");
+    const pool = real.length > 0 ? real : reps.filter((r) => r.model !== "no_trade");
+    const chrono = [...pool].reverse();
+    let cum = 0;
+    const pts = [{ idx: 0, r: 0, label: "Start" }];
+    chrono.forEach((rep, idx) => {
+      cum = Number((cum + rep.outcomeR).toFixed(2));
+      pts.push({ idx: idx + 1, r: cum, label: `#${rep.scenario}` });
+    });
+    return pts;
+  }, [reps]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const w = 560;
+    const h = 150;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    ctx.fillStyle = "#090d14";
+    ctx.fillRect(0, 0, w, h);
+
+    const padL = 36;
+    const padR = 16;
+    const padT = 14;
+    const padB = 20;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    const rs = series.map((p) => p.r);
+    const minR = Math.min(-1, ...rs);
+    const maxR = Math.max(1, ...rs);
+    const span = Math.max(0.5, maxR - minR);
+    const yOf = (r: number) => padT + ((maxR - r) / span) * plotH;
+    const xOf = (i: number) =>
+      padL + (series.length <= 1 ? 0 : (i / (series.length - 1)) * plotW);
+
+    // Zero line
+    const y0 = yOf(0);
+    ctx.strokeStyle = "#2a3650";
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(padL, y0);
+    ctx.lineTo(w - padR, y0);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Y labels
+    ctx.fillStyle = "#7c8aa5";
+    ctx.font = "9px ui-monospace, monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(`${maxR.toFixed(1)}R`, padL - 4, padT + 4);
+    ctx.fillText("0.0R", padL - 4, y0 + 3);
+    ctx.fillText(`${minR.toFixed(1)}R`, padL - 4, padT + plotH + 3);
+
+    if (series.length > 1) {
+      const lastR = series[series.length - 1].r;
+      const lineColor = lastR >= 0 ? "#10b981" : "#f43f5e";
+
+      // Area fill
+      ctx.beginPath();
+      series.forEach((pt, idx) => {
+        const x = xOf(idx);
+        const y = yOf(pt.r);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.lineTo(xOf(series.length - 1), y0);
+      ctx.lineTo(xOf(0), y0);
+      ctx.closePath();
+      ctx.fillStyle =
+        lastR >= 0 ? "rgba(16, 185, 129, 0.14)" : "rgba(244, 63, 94, 0.14)";
+      ctx.fill();
+
+      // Line
+      ctx.strokeStyle = lineColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      series.forEach((pt, idx) => {
+        const x = xOf(idx);
+        const y = yOf(pt.r);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Dots
+      series.slice(1).forEach((pt, i) => {
+        const x = xOf(i + 1);
+        const y = yOf(pt.r);
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = pt.r >= series[i].r ? "#34d399" : "#fb7185";
+        ctx.fill();
+      });
+    }
+  }, [series]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="h-[150px] w-full rounded border border-[#161f30]"
+    />
+  );
 }
 
 export function JournalView({
@@ -31,6 +150,7 @@ export function JournalView({
   const stats = useMemo(() => computeJournalStats(reps), [reps]);
 
   const [showAdd, setShowAdd] = useState(false);
+  const [copiedTsv, setCopiedTsv] = useState(false);
   const [scenario, setScenario] = useState<ScenarioNumber>(5);
   const [model, setModel] = useState<ModelType>("model1_reversal");
   const [setupTag, setSetupTag] = useState<SetupTag>("fade_vah_val");
@@ -46,6 +166,43 @@ export function JournalView({
     m5Footprint: true,
     m1: true,
   });
+
+  // Entry Timing Comparison (First Valid Pullback vs Early/First Touch vs Late Chase)
+  const timingComparison = useMemo(() => {
+    const real = reps.filter((r) => !r.isSample && r.model !== "no_trade");
+    const pool = real.length > 0 ? real : reps.filter((r) => r.model !== "no_trade");
+    const buckets = [
+      {
+        label: "First Valid Pullback (Rule)",
+        items: pool.filter((r) => r.entryTiming === "first_valid_pullback"),
+        color: "bg-emerald-500",
+        text: "text-emerald-300",
+      },
+      {
+        label: "First Touch / Early (Leak)",
+        items: pool.filter(
+          (r) => r.entryTiming === "first_touch" || r.entryTiming === "early"
+        ),
+        color: "bg-rose-500",
+        text: "text-rose-300",
+      },
+      {
+        label: "Late Chase",
+        items: pool.filter((r) => r.entryTiming === "late_chase"),
+        color: "bg-amber-500",
+        text: "text-amber-300",
+      },
+    ];
+    return buckets.map((b) => {
+      const count = b.items.length;
+      const wins = b.items.filter((x) => x.outcomeR > 0).length;
+      const totalR = Number(
+        b.items.reduce((s, x) => s + x.outcomeR, 0).toFixed(2)
+      );
+      const wr = count > 0 ? Number(((wins / count) * 100).toFixed(0)) : 0;
+      return { ...b, count, wins, totalR, wr };
+    });
+  }, [reps]);
 
   const handleManualAdd = (e: React.FormEvent) => {
     e.preventDefault();
@@ -85,13 +242,19 @@ export function JournalView({
     URL.revokeObjectURL(url);
   };
 
+  const copySheetTSV = () => {
+    navigator.clipboard.writeText(exportGoogleSheetTSV(reps));
+    setCopiedTsv(true);
+    setTimeout(() => setCopiedTsv(false), 2000);
+  };
+
   const realRepCount = reps.filter((r) => !r.isSample).length;
   const pctTo50 = Math.min(100, (realRepCount / 50) * 100);
   const pctTo200 = Math.min(100, (realRepCount / 200) * 100);
 
   return (
     <div className="mx-auto max-w-7xl space-y-4 p-4 text-xs">
-      {/* Header + Progress toward 50 / 200 reps */}
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#1c2436] bg-[#0c1018] p-4">
         <div>
           <h2 className="text-sm font-semibold text-slate-100">
@@ -101,13 +264,29 @@ export function JournalView({
             Two jobs of backtesting: prove model edge in your hands and eliminate the early-entry leak.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => setShowAdd((v) => !v)}
             className="flex items-center gap-1 rounded bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
           >
             <Plus className="h-3.5 w-3.5" /> Log Manual Rep
+          </button>
+          <button
+            type="button"
+            onClick={copySheetTSV}
+            className="flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-emerald-300 hover:bg-emerald-500/20"
+            title="Copy TSV formatted with $1.00/pt 1OZ math for Google Sheet Trade Log"
+          >
+            {copiedTsv ? (
+              <>
+                <Check className="h-3.5 w-3.5" /> Copied Sheet TSV
+              </>
+            ) : (
+              <>
+                <Copy className="h-3.5 w-3.5" /> Copy Sheet TSV ($1/pt)
+              </>
+            )}
           </button>
           <button
             type="button"
@@ -255,6 +434,57 @@ export function JournalView({
           <div className="font-mono-num text-xs text-sky-300">
             M2: {stats.byModel.model2_continuation.totalR >= 0 ? "+" : ""}
             {stats.byModel.model2_continuation.totalR}R
+          </div>
+        </div>
+      </div>
+
+      {/* Cumulative R Equity Curve + Entry Timing Leak Comparison */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-lg border border-[#1c2436] bg-[#0c1018] p-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold text-slate-100">
+              Cumulative R Equity Curve
+            </h3>
+            <span className="font-mono-num text-[11px] text-slate-400">
+              Net {stats.totalR >= 0 ? "+" : ""}
+              {stats.totalR}R across {stats.tradedReps} traded reps
+            </span>
+          </div>
+          <EquityCurveCanvas reps={reps} />
+        </div>
+
+        <div className="rounded-lg border border-[#1c2436] bg-[#0c1018] p-4">
+          <h3 className="font-semibold text-slate-100">
+            Pullback Discipline vs Early-Entry Leak
+          </h3>
+          <p className="mt-0.5 text-[11px] text-slate-400">
+            Compare exact Win Rate &amp; Net R when waiting for First Valid Pullback vs clicking early.
+          </p>
+          <div className="mt-3 space-y-3">
+            {timingComparison.map((row) => (
+              <div key={row.label}>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className={`font-medium ${row.text}`}>{row.label}</span>
+                  <span className="font-mono-num text-slate-300">
+                    {row.count} reps · {row.wr}% WR ·{" "}
+                    <strong
+                      className={
+                        row.totalR >= 0 ? "text-emerald-400" : "text-rose-400"
+                      }
+                    >
+                      {row.totalR >= 0 ? "+" : ""}
+                      {row.totalR}R
+                    </strong>
+                  </span>
+                </div>
+                <div className="mt-1 h-2 rounded-full bg-[#151d2e] overflow-hidden">
+                  <div
+                    className={`h-full ${row.color}`}
+                    style={{ width: `${Math.max(4, row.wr)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -465,6 +695,7 @@ export function JournalView({
                 <th className="py-2 pr-3">Scenario</th>
                 <th className="py-2 pr-3">Model</th>
                 <th className="py-2 pr-3">Timing</th>
+                <th className="py-2 pr-3 text-right">Slip</th>
                 <th className="py-2 pr-3 text-right">Outcome</th>
                 <th className="py-2 pr-3">Note</th>
                 <th className="py-2 text-right">Del</th>
@@ -511,6 +742,9 @@ export function JournalView({
                     >
                       {r.entryTiming.replace(/_/g, " ")}
                     </span>
+                  </td>
+                  <td className="py-2 pr-3 text-right font-mono-num text-amber-300">
+                    {r.slippagePts ? `+${r.slippagePts.toFixed(2)}` : "-"}
                   </td>
                   <td
                     className={`py-2 pr-3 text-right font-mono-num font-semibold ${
