@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   BigTradePrint,
   Candle,
+  FootprintBar,
   KeyLevelZone,
   NakedPoc,
   PendingOrder,
@@ -11,13 +12,16 @@ import {
   VolumeProfileResult,
 } from "@/lib/types";
 import { formatPTTime } from "@/lib/goldMath";
+import { ATAS_ASIA_THEME as T } from "@/lib/atasTheme";
 
 export type PricePickTarget = "entry" | "stop" | "t1" | "t2" | null;
 
 interface CandleProfileChartProps {
   title: string;
-  subtitle?: string;
+  timeframeLabel: "H1" | "M30" | "M5" | "M1";
+  instrumentLabel?: string;
   candles: Candle[];
+  footprintBars?: FootprintBar[]; // For ATAS Absorption 5px horizontal bars & DeltaStrength dots
   vwapSeries?: Array<{ ts: number; vwap: number }>;
   profiles?: {
     previousDay?: VolumeProfileResult | null;
@@ -43,73 +47,15 @@ interface CandleProfileChartProps {
   defaultVisibleBars?: number;
   hoverTs?: number | null;
   onHoverTs?: (ts: number | null) => void;
-  headerRight?: React.ReactNode;
+  indicatorBadges?: string[];
 }
-
-const ZONE_PALETTE: Record<
-  KeyLevelZone["kind"],
-  { fill: string; border: string; tagBg: string; tagText: string }
-> = {
-  stacked: {
-    fill: "rgba(212, 160, 58, 0.11)",
-    border: "rgba(212, 160, 58, 0.55)",
-    tagBg: "rgba(212, 160, 58, 0.18)",
-    tagText: "#eab854",
-  },
-  pd: {
-    fill: "rgba(212, 160, 58, 0.06)",
-    border: "rgba(212, 160, 58, 0.32)",
-    tagBg: "rgba(30, 35, 45, 0.9)",
-    tagText: "#d4a03a",
-  },
-  pw: {
-    fill: "rgba(96, 165, 250, 0.06)",
-    border: "rgba(96, 165, 250, 0.34)",
-    tagBg: "rgba(22, 30, 44, 0.9)",
-    tagText: "#93c5fd",
-  },
-  composite: {
-    fill: "rgba(167, 139, 250, 0.06)",
-    border: "rgba(167, 139, 250, 0.32)",
-    tagBg: "rgba(28, 25, 42, 0.9)",
-    tagText: "#c4b5fd",
-  },
-  hvn: {
-    fill: "rgba(0, 192, 135, 0.05)",
-    border: "rgba(0, 192, 135, 0.28)",
-    tagBg: "rgba(16, 30, 28, 0.9)",
-    tagText: "#6ee7b7",
-  },
-  lvn: {
-    fill: "rgba(246, 70, 93, 0.05)",
-    border: "rgba(246, 70, 93, 0.28)",
-    tagBg: "rgba(34, 18, 24, 0.9)",
-    tagText: "#fda4af",
-  },
-  npoc: {
-    fill: "rgba(245, 158, 11, 0.06)",
-    border: "rgba(245, 158, 11, 0.32)",
-    tagBg: "rgba(32, 24, 16, 0.9)",
-    tagText: "#fcd34d",
-  },
-  no_trade: {
-    fill: "rgba(100, 116, 139, 0.08)",
-    border: "rgba(100, 116, 139, 0.28)",
-    tagBg: "rgba(24, 29, 38, 0.9)",
-    tagText: "#94a3b8",
-  },
-  custom: {
-    fill: "rgba(56, 189, 248, 0.10)",
-    border: "rgba(56, 189, 248, 0.55)",
-    tagBg: "rgba(14, 34, 48, 0.92)",
-    tagText: "#7dd3fc",
-  },
-};
 
 export function CandleProfileChart({
   title,
-  subtitle,
+  timeframeLabel,
+  instrumentLabel = "/GC:XCEC",
   candles,
+  footprintBars = [],
   vwapSeries = [],
   profiles,
   activeProfileMode = "developing",
@@ -130,7 +76,12 @@ export function CandleProfileChart({
   defaultVisibleBars = 72,
   hoverTs,
   onHoverTs,
-  headerRight,
+  indicatorBadges = [
+    "VWAP (Yellow)",
+    "BigTrades (Large/Whale)",
+    "Absorption (300%)",
+    "BarTimer",
+  ],
 }: CandleProfileChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -144,7 +95,7 @@ export function CandleProfileChart({
   } | null>(null);
   const [drawStartPrice, setDrawStartPrice] = useState<number | null>(null);
   const [drawCurrentPrice, setDrawCurrentPrice] = useState<number | null>(null);
-  const [dims, setDims] = useState({ width: 640, height: 320 });
+  const [dims, setDims] = useState({ width: 640, height: 340 });
 
   useEffect(() => {
     setRightOffset((prev) => Math.min(prev, Math.max(0, candles.length - 10)));
@@ -170,7 +121,7 @@ export function CandleProfileChart({
     return candles.slice(startIdx, endIdx);
   }, [candles, barsCount, rightOffset]);
 
-  // Show only top 4 clean zones (active + pinned + nearest) so chart never turns into label soup
+  // Keep only active + pinned + top 3 nearest levels so ATAS canvas stays clean
   const displayZones = useMemo(() => {
     const picked: KeyLevelZone[] = [];
     const seen = new Set<string>();
@@ -193,6 +144,12 @@ export function CandleProfileChart({
     for (const v of vwapSeries) m.set(v.ts, v.vwap);
     return m;
   }, [vwapSeries]);
+
+  const fpByTs = useMemo(() => {
+    const m = new Map<number, FootprintBar>();
+    for (const f of footprintBars) m.set(f.ts, f);
+    return m;
+  }, [footprintBars]);
 
   const activeProfile = useMemo(() => {
     if (!profiles) return null;
@@ -225,17 +182,18 @@ export function CandleProfileChart({
   }, [visibleSlice, positions, pendingOrders]);
 
   const layout = useMemo(() => {
-    const padLeft = 10;
-    const padTop = 12;
+    const padLeft = 8;
+    const padTop = 18;
     const padBottom = 22;
-    const axisRightWidth = 64;
+    const axisRightWidth = 66;
+    const chartOffsetRight = 24; // ATAS ChartOffset: 30 whitespace right of last bar
     const profileWidth = activeProfile ? 58 : 0;
     const plotWidth = Math.max(
       80,
-      dims.width - padLeft - axisRightWidth - profileWidth - 6
+      dims.width - padLeft - axisRightWidth - profileWidth - chartOffsetRight
     );
     const plotHeight = Math.max(80, dims.height - padTop - padBottom);
-    const volHeight = Math.min(38, Math.floor(plotHeight * 0.15));
+    const volHeight = Math.min(34, Math.floor(plotHeight * 0.13));
     const priceHeight = plotHeight - volHeight - 4;
 
     return {
@@ -243,6 +201,7 @@ export function CandleProfileChart({
       padTop,
       padBottom,
       axisRightWidth,
+      chartOffsetRight,
       profileWidth,
       plotWidth,
       plotHeight,
@@ -261,6 +220,12 @@ export function CandleProfileChart({
     return layout.padTop + ((priceBounds.max - price) / span) * layout.priceHeight;
   };
 
+  // Exact ATAS bear candle color per timeframe from Asia_Template_Fixed.aws
+  const bearCandleColor =
+    timeframeLabel === "M5" || timeframeLabel === "M1"
+      ? T.candles.bearM5M1 // rgb(0, 160, 255)
+      : T.candles.bearCyan; // rgb(59, 239, 240)
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -272,40 +237,46 @@ export function CandleProfileChart({
     canvas.height = dims.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    ctx.fillStyle = "#0b0d11";
-    ctx.fillRect(0, 0, dims.width, dims.height);
-
     const { padLeft, padTop, plotWidth, priceHeight, volHeight, profileWidth } = layout;
     const axisX = dims.width - layout.axisRightWidth;
+    const timeAxisY = dims.height - layout.padBottom;
 
-    // Right price axis separator
-    ctx.strokeStyle = "#171b24";
+    // 1. EXACT ATAS X Vertical Gradient Background: rgb(0,0,107) -> Black
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, timeAxisY);
+    bgGrad.addColorStop(0, T.canvas.candleBgTop);
+    bgGrad.addColorStop(1, T.canvas.bgBottom);
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, axisX, timeAxisY);
+
+    // 2. ATAS Axis Strips (#151B26)
+    ctx.fillStyle = T.chrome.panelBg;
+    ctx.fillRect(axisX, 0, layout.axisRightWidth, dims.height);
+    ctx.fillRect(0, timeAxisY, dims.width, layout.padBottom);
+
+    // Subtle hairline axis separators
+    ctx.strokeStyle = T.chrome.border;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(axisX + 0.5, 0);
-    ctx.lineTo(axisX + 0.5, dims.height - layout.padBottom);
-    ctx.stroke();
-
-    // Bottom time axis separator
-    ctx.beginPath();
-    ctx.moveTo(0, dims.height - layout.padBottom + 0.5);
-    ctx.lineTo(dims.width, dims.height - layout.padBottom + 0.5);
+    ctx.lineTo(axisX + 0.5, dims.height);
+    ctx.moveTo(0, timeAxisY + 0.5);
+    ctx.lineTo(dims.width, timeAxisY + 0.5);
     ctx.stroke();
 
     if (visibleSlice.length === 0) {
-      ctx.fillStyle = "#586070";
-      ctx.font = "11px ui-monospace, monospace";
+      ctx.fillStyle = T.chrome.textSecondary;
+      ctx.font = "11px 'Segoe UI', sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("Waiting for session bars...", dims.width / 2, dims.height / 2);
+      ctx.fillText("Loading historical session...", axisX / 2, timeAxisY / 2);
       return;
     }
 
-    // Subtle horizontal gridlines
-    const numGrid = 5;
+    // 3. Ultra-faint ATAS Grid + Price Axis Labels (10px, #ABAEB8)
+    const numGrid = 6;
     const priceSpan = priceBounds.max - priceBounds.min;
-    ctx.strokeStyle = "#12161e";
+    ctx.strokeStyle = T.canvas.grid;
     ctx.lineWidth = 1;
-    ctx.font = "10px ui-monospace, monospace";
+    ctx.font = "10px 'Segoe UI', ui-monospace, monospace";
     ctx.textAlign = "left";
 
     for (let i = 0; i <= numGrid; i++) {
@@ -316,11 +287,11 @@ export function CandleProfileChart({
       ctx.lineTo(axisX, y);
       ctx.stroke();
 
-      ctx.fillStyle = "#626b7c";
-      ctx.fillText(p.toFixed(show1OZGrid ? 2 : 1), axisX + 7, y + 3);
+      ctx.fillStyle = T.chrome.textSecondary;
+      ctx.fillText(p.toFixed(show1OZGrid ? 2 : 1), axisX + 6, y + 3.5);
     }
 
-    // Developing Value middle shading (very understated)
+    // 4. Developing Value faint band
     if (profiles?.developing) {
       const dev = profiles.developing;
       const yVah = priceToY(dev.vah);
@@ -328,33 +299,12 @@ export function CandleProfileChart({
       const top = Math.max(padTop, Math.min(yVah, yVal));
       const bot = Math.min(padTop + priceHeight, Math.max(yVah, yVal));
       if (bot > top) {
-        ctx.fillStyle = "rgba(139, 148, 165, 0.045)";
-        ctx.fillRect(padLeft, top, plotWidth, bot - top);
-        ctx.strokeStyle = "rgba(139, 148, 165, 0.18)";
-        ctx.setLineDash([2, 4]);
-        ctx.beginPath();
-        ctx.moveTo(padLeft, yVah);
-        ctx.lineTo(padLeft + plotWidth, yVah);
-        ctx.moveTo(padLeft, yVal);
-        ctx.lineTo(padLeft + plotWidth, yVal);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        const yPoc = priceToY(dev.poc);
-        if (yPoc >= padTop && yPoc <= padTop + priceHeight) {
-          ctx.strokeStyle = "rgba(212, 160, 58, 0.45)";
-          ctx.lineWidth = 1;
-          ctx.setLineDash([3, 3]);
-          ctx.beginPath();
-          ctx.moveTo(padLeft, yPoc);
-          ctx.lineTo(padLeft + plotWidth, yPoc);
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
+        ctx.fillStyle = "rgba(100, 160, 255, 0.05)";
+        ctx.fillRect(padLeft, top, axisX - padLeft, bot - top);
       }
     }
 
-    // Key Level Zones (clean subtle bands + compact non-overlapping pill tags)
+    // 5. Key Level Zones styled like ATAS DrawingObjects (Cyan dashed & Red solid rays, right-aligned labels)
     const usedLabelYs: number[] = [];
     for (const z of displayZones) {
       const yTop = priceToY(z.high);
@@ -362,125 +312,152 @@ export function CandleProfileChart({
       if (yBot < padTop || yTop > padTop + priceHeight) continue;
       const clampedTop = Math.max(padTop, yTop);
       const clampedBot = Math.min(padTop + priceHeight, yBot);
-      const st = ZONE_PALETTE[z.kind] ?? ZONE_PALETTE.custom;
       const isSelected = z.id === activeZoneId;
+      const isCyan = z.kind === "pw" || z.kind === "custom" || z.kind === "composite";
+      const lineColor = isSelected
+        ? "#FFFF00"
+        : z.kind === "stacked"
+          ? T.indicators.levelRed
+          : isCyan
+            ? T.indicators.levelCyan
+            : T.indicators.levelRed;
 
-      ctx.fillStyle = isSelected ? "rgba(212, 160, 58, 0.15)" : st.fill;
-      ctx.fillRect(padLeft, clampedTop, plotWidth, Math.max(2, clampedBot - clampedTop));
+      ctx.fillStyle = isSelected
+        ? "rgba(255, 255, 0, 0.09)"
+        : isCyan
+          ? "rgba(59, 239, 240, 0.08)"
+          : "rgba(255, 58, 58, 0.08)";
+      ctx.fillRect(padLeft, clampedTop, axisX - padLeft - profileWidth, Math.max(2, clampedBot - clampedTop));
 
-      ctx.strokeStyle = isSelected ? "#d4a03a" : st.border;
-      ctx.lineWidth = isSelected ? 1.2 : 0.8;
-      if (!isSelected) ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = lineColor;
+      ctx.lineWidth = isSelected ? 2 : 1.5;
+      if (isCyan && !isSelected) ctx.setLineDash([5, 4]);
       ctx.beginPath();
       ctx.moveTo(padLeft, clampedTop);
-      ctx.lineTo(padLeft + plotWidth, clampedTop);
+      ctx.lineTo(axisX - profileWidth, clampedTop);
       ctx.moveTo(padLeft, clampedBot);
-      ctx.lineTo(padLeft + plotWidth, clampedBot);
+      ctx.lineTo(axisX - profileWidth, clampedBot);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Compact tag on left only if it doesn't collide vertically with another tag
-      const labelY = Math.max(padTop + 11, clampedTop + 11);
-      if (usedLabelYs.every((uy) => Math.abs(uy - labelY) >= 15)) {
+      // ATAS topRight label style
+      const labelY = Math.max(padTop + 11, clampedTop - 3);
+      if (usedLabelYs.every((uy) => Math.abs(uy - labelY) >= 14)) {
         usedLabelYs.push(labelY);
-        const shortLabel = z.label
-          .replace("STACKED: ", "★ ")
-          .slice(0, 26);
-        const txt = `${shortLabel} ${z.low.toFixed(1)}-${z.high.toFixed(1)}`;
-        ctx.font = "500 9.5px ui-monospace, monospace";
-        const tw = ctx.measureText(txt).width;
-        ctx.fillStyle = st.tagBg;
-        ctx.fillRect(padLeft + 4, labelY - 9, tw + 8, 13);
-        ctx.fillStyle = isSelected ? "#f6d27a" : st.tagText;
-        ctx.fillText(txt, padLeft + 8, labelY + 1);
+        const lbl = `${z.label.replace("STACKED: ", "")} ${z.low.toFixed(1)}-${z.high.toFixed(1)}`;
+        ctx.font = "9.5px 'Segoe UI', ui-monospace, monospace";
+        ctx.textAlign = "right";
+        ctx.fillStyle = lineColor;
+        ctx.fillText(lbl, axisX - profileWidth - 6, labelY);
+        ctx.textAlign = "left";
       }
     }
 
-    // Naked POCs (subtle dotted ray)
+    // 6. Naked POCs (subtle cyan/orange dotted rays)
     for (const np of nakedPocs.slice(-2)) {
       if (!np.untested) continue;
       const y = priceToY(np.price);
       if (y < padTop || y > padTop + priceHeight) continue;
-      ctx.strokeStyle = "rgba(212, 160, 58, 0.45)";
+      ctx.strokeStyle = "rgba(255, 73, 0, 0.65)";
       ctx.lineWidth = 1;
       ctx.setLineDash([2, 4]);
       ctx.beginPath();
       ctx.moveTo(padLeft, y);
-      ctx.lineTo(padLeft + plotWidth, y);
+      ctx.lineTo(axisX - profileWidth, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = "#b88a32";
-      ctx.font = "9px ui-monospace, monospace";
-      ctx.fillText(`nPOC ${np.price.toFixed(1)}`, padLeft + plotWidth - 76, y - 3);
+      ctx.fillStyle = "#FF8547";
+      ctx.font = "9px 'Segoe UI', monospace";
+      ctx.fillText(`nPOC ${np.price.toFixed(1)}`, padLeft + 6, y - 3);
     }
 
-    // Tokyo Open marker
+    // 7. New Session Vertical Line (ATAS NewSessionPen: rgb(73, 133, 231) dashed)
     const stepX = plotWidth / Math.max(1, visibleSlice.length);
-    const candleWidth = Math.max(2, Math.min(11, stepX * 0.64));
+    const candleWidth = Math.max(2, Math.min(12, stepX * 0.68));
     if (asiaOpenTs) {
       const idx = visibleSlice.findIndex((c) => c.ts >= asiaOpenTs);
       if (idx > 0) {
         const x = Math.round(padLeft + idx * stepX + stepX / 2) + 0.5;
-        ctx.strokeStyle = "rgba(139, 148, 165, 0.22)";
+        ctx.strokeStyle = T.chrome.sessionLine;
         ctx.lineWidth = 1;
-        ctx.setLineDash([2, 4]);
+        ctx.setLineDash([4, 4]);
         ctx.beginPath();
         ctx.moveTo(x, padTop);
-        ctx.lineTo(x, padTop + priceHeight + volHeight);
+        ctx.lineTo(x, timeAxisY);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = "#626b7c";
-        ctx.font = "9px ui-monospace, monospace";
-        ctx.fillText("TOKYO 16:00", x + 4, padTop + 10);
+        ctx.fillStyle = T.chrome.sessionLine;
+        ctx.font = "9px 'Segoe UI', monospace";
+        ctx.fillText("Asia 16:00 PT", x + 4, padTop + 10);
       }
     }
 
-    // Candles + Subtle Volume Bars
+    // 8. ATAS Absorption Indicator (exact 5px translucent green/red bands at absorption lows/highs!)
+    if (footprintBars.length > 0) {
+      for (let i = 0; i < visibleSlice.length; i++) {
+        const c = visibleSlice[i];
+        const fp = fpByTs.get(c.ts);
+        if (!fp) continue;
+        const cx = padLeft + i * stepX + stepX / 2;
+        if (fp.absorptionLow) {
+          const y = priceToY(c.low);
+          ctx.fillStyle = T.indicators.absorptionBull; // rgba(60, 243, 60, 0.36)
+          ctx.fillRect(cx - candleWidth, y - 2.5, candleWidth * 3.5, 5);
+        }
+        if (fp.absorptionHigh) {
+          const y = priceToY(c.high);
+          ctx.fillStyle = T.indicators.absorptionBear; // rgba(255, 58, 58, 0.36)
+          ctx.fillRect(cx - candleWidth, y - 2.5, candleWidth * 3.5, 5);
+        }
+      }
+    }
+
+    // 9. EXACT ATAS CANDLES: Solid White Bull (#FFFFFF) + Electric Blue/Cyan Bear (#00A0FF / #3BEFF0)
     const maxVol = Math.max(...visibleSlice.map((c) => c.volume), 1);
     const volTop = padTop + priceHeight + 4;
 
     for (let i = 0; i < visibleSlice.length; i++) {
       const c = visibleSlice[i];
       const cx = padLeft + i * stepX + stepX / 2;
-      const isUp = c.close >= c.open;
-      const bodyColor = isUp ? "#00c087" : "#f6465d";
+      const isDoji = Math.abs(c.close - c.open) < 0.01;
+      const isUp = c.close > c.open;
+      const color = isDoji
+        ? T.candles.doji
+        : isUp
+          ? T.candles.bull
+          : bearCandleColor;
 
       const yHigh = priceToY(c.high);
       const yLow = priceToY(c.low);
       const yOpen = priceToY(c.open);
       const yClose = priceToY(c.close);
 
-      // Crisp 1px wick
-      ctx.strokeStyle = bodyColor;
+      // Wick (matches body color, ATAS CandleBorderColorAsBody: true)
+      ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(Math.round(cx) + 0.5, yHigh);
       ctx.lineTo(Math.round(cx) + 0.5, yLow);
       ctx.stroke();
 
-      // Body
+      // Solid borderless body (DrawCandleBorder: false)
       const bodyTop = Math.min(yOpen, yClose);
-      const bodyH = Math.max(1.2, Math.abs(yClose - yOpen));
-      ctx.fillStyle = bodyColor;
+      const bodyH = Math.max(1.5, Math.abs(yClose - yOpen));
+      ctx.fillStyle = color;
       ctx.fillRect(cx - candleWidth / 2, bodyTop, candleWidth, bodyH);
 
-      // Volume bar
+      // Subtle bottom volume ticks
       const vh = (c.volume / maxVol) * (volHeight - 2);
       ctx.fillStyle = isUp
-        ? "rgba(0, 192, 135, 0.22)"
-        : "rgba(246, 70, 93, 0.22)";
-      ctx.fillRect(
-        cx - candleWidth / 2,
-        volTop + volHeight - vh,
-        candleWidth,
-        vh
-      );
+        ? "rgba(255, 255, 255, 0.2)"
+        : "rgba(0, 160, 255, 0.25)";
+      ctx.fillRect(cx - candleWidth / 2, volTop + volHeight - vh, candleWidth, vh);
     }
 
-    // VWAP smooth line
+    // 10. EXACT ATAS YELLOW VWAP (VWAPOnly: true, Color: Yellow)
     if (vwapMap.size > 0) {
-      ctx.strokeStyle = "rgba(230, 233, 239, 0.72)";
-      ctx.lineWidth = 1.25;
+      ctx.strokeStyle = T.indicators.vwap;
+      ctx.lineWidth = 1.6;
       ctx.beginPath();
       let started = false;
       for (let i = 0; i < visibleSlice.length; i++) {
@@ -502,7 +479,9 @@ export function CandleProfileChart({
       ctx.stroke();
     }
 
-    // Big Trades markers (subtle, clean rings)
+    // 11. EXACT ATAS TWO-TIER BIG TRADES ELLIPSES
+    // Tier 1 (Large): Buy #0073FF (blue), Sell #F2385A (crimson)
+    // Tier 2 (Whale): Buy #3BEFF0 (cyan), Sell #D900FC (neon magenta)
     if (bigTrades.length > 0) {
       const tsToIdx = new Map<number, number>();
       visibleSlice.forEach((c, idx) => tsToIdx.set(c.ts, idx));
@@ -512,25 +491,31 @@ export function CandleProfileChart({
         const cx = padLeft + idx * stepX + stepX / 2;
         const cy = priceToY(bt.price);
         if (cy < padTop || cy > padTop + priceHeight) continue;
-        const radius = bt.tier === "whale" ? 5 : 3;
+        const radius = bt.tier === "whale" ? 7 : 4.5;
+        const fillHex =
+          bt.tier === "whale"
+            ? bt.side === "buy"
+              ? T.indicators.bigTradeWhaleBuy
+              : T.indicators.bigTradeWhaleSell
+            : bt.side === "buy"
+              ? T.indicators.bigTradeLargeBuy
+              : T.indicators.bigTradeLargeSell;
+
+        ctx.save();
+        ctx.globalAlpha = bt.tier === "whale" ? 0.72 : 0.62;
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-        ctx.fillStyle =
-          bt.side === "buy"
-            ? "rgba(0, 192, 135, 0.55)"
-            : bt.side === "sell"
-              ? "rgba(246, 70, 93, 0.55)"
-              : "rgba(212, 160, 58, 0.55)";
+        ctx.fillStyle = fillHex;
         ctx.fill();
-        if (bt.tier === "whale") {
-          ctx.strokeStyle = "#eab854";
-          ctx.lineWidth = 1.2;
-          ctx.stroke();
-        }
+        ctx.globalAlpha = 0.95;
+        ctx.strokeStyle = fillHex;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
       }
     }
 
-    // Right-Hand Volume Profile Histogram (Exocharts subtle graphite + gold POC)
+    // 12. Right-Hand Volume Profile Histogram (Cobalt Blue #2962FF + Blazing Orange #FF4900 POC)
     if (activeProfile && profileWidth > 0) {
       const profRightX = axisX - 2;
       const maxBinVol = Math.max(...activeProfile.bins.map((b) => b.volume), 1);
@@ -538,16 +523,16 @@ export function CandleProfileChart({
       for (const bin of activeProfile.bins) {
         const y = priceToY(bin.price);
         if (y < padTop || y > padTop + priceHeight) continue;
-        const barW = Math.max(1.5, (bin.volume / maxBinVol) * (profileWidth - 4));
+        const barW = Math.max(2, (bin.volume / maxBinVol) * (profileWidth - 4));
         const inVa = bin.price >= activeProfile.val && bin.price <= activeProfile.vah;
         const isPoc = Math.abs(bin.price - activeProfile.poc) < 1e-4;
 
         ctx.fillStyle = isPoc
-          ? "#d4a03a"
+          ? T.clusters.pocVolume // #FF4900
           : inVa
-            ? "rgba(148, 163, 184, 0.34)"
-            : "rgba(71, 85, 105, 0.22)";
-        ctx.fillRect(profRightX - barW, y - 1.2, barW, 2.4);
+            ? "rgba(41, 98, 255, 0.55)" // #2962FF
+            : "rgba(41, 98, 255, 0.24)";
+        ctx.fillRect(profRightX - barW, y - 1.3, barW, 2.6);
       }
 
       const drawProfileTick = (p: number, lbl: string, color: string) => {
@@ -560,107 +545,91 @@ export function CandleProfileChart({
         ctx.lineTo(profRightX, y);
         ctx.stroke();
         ctx.fillStyle = color;
-        ctx.font = "600 8.5px ui-monospace, monospace";
-        ctx.fillText(lbl, profRightX - profileWidth + 1, y - 2.5);
+        ctx.font = "600 8.5px 'Segoe UI', monospace";
+        ctx.fillText(lbl, profRightX - profileWidth + 2, y - 2);
       };
-      drawProfileTick(activeProfile.vah, "VAH", "#8b94a5");
-      drawProfileTick(activeProfile.poc, "POC", "#d4a03a");
-      drawProfileTick(activeProfile.val, "VAL", "#8b94a5");
+      drawProfileTick(activeProfile.vah, "VAH", "#74A6E2");
+      drawProfileTick(activeProfile.poc, "POC", T.clusters.pocVolume);
+      drawProfileTick(activeProfile.val, "VAL", "#74A6E2");
     }
 
-    // Pending Working Orders
-    for (const ord of pendingOrders) {
-      const yTrig = priceToY(ord.triggerPriceExec);
-      const yInv = priceToY(ord.invalidationPriceExec);
-      if (yTrig >= padTop && yTrig <= padTop + priceHeight) {
-        ctx.strokeStyle = "#d4a03a";
-        ctx.lineWidth = 1.2;
-        ctx.setLineDash([5, 3]);
-        ctx.beginPath();
-        ctx.moveTo(padLeft, yTrig);
-        ctx.lineTo(padLeft + plotWidth, yTrig);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = "#eab854";
-        ctx.font = "600 9.5px ui-monospace, monospace";
-        ctx.fillText(
-          `${ord.side.toUpperCase()} ${ord.orderType.toUpperCase()} ${ord.triggerPriceExec.toFixed(2)}`,
-          padLeft + 8,
-          yTrig - 4
-        );
-      }
-      if (yInv >= padTop && yInv <= padTop + priceHeight) {
-        ctx.strokeStyle = "rgba(246, 70, 93, 0.65)";
-        ctx.lineWidth = 1;
-        ctx.setLineDash([2, 3]);
-        ctx.beginPath();
-        ctx.moveTo(padLeft, yInv);
-        ctx.lineTo(padLeft + plotWidth, yInv);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = "#f6465d";
-        ctx.font = "9px ui-monospace, monospace";
-        ctx.fillText(`CANCEL ${ord.invalidationPriceExec.toFixed(2)}`, padLeft + 8, yInv + 10);
-      }
-    }
-
-    // Open & Closed Positions
+    // 13. ATAS Trading Orders & Position Lines (exact TradingSettings colors: #089981 Buy, #F2385A Sell)
     const findBarX = (ts: number) => {
       let idx = visibleSlice.findIndex((c) => c.ts >= ts);
       if (idx === -1) idx = visibleSlice.length - 1;
       return padLeft + idx * stepX + stepX / 2;
     };
 
+    for (const ord of pendingOrders) {
+      const yTrig = priceToY(ord.triggerPriceExec);
+      const yInv = priceToY(ord.invalidationPriceExec);
+      const col = ord.side === "long" ? T.trading.buyOrder : T.trading.sellOrder;
+      if (yTrig >= padTop && yTrig <= padTop + priceHeight) {
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.moveTo(padLeft, yTrig);
+        ctx.lineTo(axisX, yTrig);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = col;
+        ctx.fillRect(padLeft + 6, yTrig - 9, 134, 15);
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = "600 9.5px 'Segoe UI', monospace";
+        ctx.fillText(
+          `${ord.side.toUpperCase()} ${ord.orderType.toUpperCase()} ${ord.triggerPriceExec.toFixed(2)}`,
+          padLeft + 10,
+          yTrig + 2
+        );
+      }
+      if (yInv >= padTop && yInv <= padTop + priceHeight) {
+        ctx.strokeStyle = T.trading.sellOrder;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(padLeft, yInv);
+        ctx.lineTo(axisX, yInv);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
     for (const pos of positions) {
       const entryX = findBarX(pos.openedAtTs);
       const entryY = priceToY(pos.entryPriceExec);
-
       if (pos.status === "open") {
-        const rightEdge = padLeft + plotWidth;
-        const stopY = priceToY(pos.stopPriceExec);
-        const t2Y = priceToY(pos.t2PriceExec);
-
-        ctx.fillStyle = "rgba(246, 70, 93, 0.07)";
-        ctx.fillRect(
-          entryX,
-          Math.min(entryY, stopY),
-          Math.max(12, rightEdge - entryX),
-          Math.abs(stopY - entryY)
-        );
-        ctx.fillStyle = "rgba(0, 192, 135, 0.07)";
-        ctx.fillRect(
-          entryX,
-          Math.min(entryY, t2Y),
-          Math.max(12, rightEdge - entryX),
-          Math.abs(t2Y - entryY)
-        );
-
-        const drawOrderLine = (price: number, label: string, color: string) => {
-          const y = priceToY(price);
+        const drawLine = (p: number, lbl: string, col: string) => {
+          const y = priceToY(p);
           if (y < padTop || y > padTop + priceHeight) return;
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 1.3;
           ctx.setLineDash([4, 3]);
           ctx.beginPath();
           ctx.moveTo(padLeft, y);
-          ctx.lineTo(padLeft + plotWidth, y);
+          ctx.lineTo(axisX, y);
           ctx.stroke();
           ctx.setLineDash([]);
-          ctx.fillStyle = color;
-          ctx.font = "600 9.5px ui-monospace, monospace";
-          ctx.fillText(`${label} ${price.toFixed(2)}`, padLeft + 8, y - 4);
+          ctx.fillStyle = col;
+          ctx.fillRect(padLeft + 6, y - 8, 92, 14);
+          ctx.fillStyle = "#FFFFFF";
+          ctx.font = "600 9.5px 'Segoe UI', monospace";
+          ctx.fillText(`${lbl} ${p.toFixed(2)}`, padLeft + 10, y + 2.5);
         };
-        drawOrderLine(pos.entryPriceExec, `${pos.side.toUpperCase()} ${pos.contracts}×`, "#e6e9ef");
-        drawOrderLine(pos.stopPriceExec, "SL", "#f6465d");
-        drawOrderLine(pos.t1PriceExec, "T1", "#00c087");
-        drawOrderLine(pos.t2PriceExec, "T2", "#34d399");
+        drawLine(
+          pos.entryPriceExec,
+          `${pos.side.toUpperCase()} ${pos.contracts}×`,
+          pos.side === "long" ? T.trading.buyOrder : T.trading.sellOrder
+        );
+        drawLine(pos.stopPriceExec, "SL", T.trading.sellOrder);
+        drawLine(pos.t1PriceExec, "T1", T.trading.buyOrder);
+        drawLine(pos.t2PriceExec, "T2", "#3BEFF0");
       } else if (pos.closedAtTs && pos.exitPriceExec !== undefined) {
         const exitX = findBarX(pos.closedAtTs);
         const exitY = priceToY(pos.exitPriceExec);
         const win = (pos.rMultiple ?? 0) >= 0;
-
-        ctx.strokeStyle = win ? "#00c087" : "#f6465d";
-        ctx.lineWidth = 1.3;
+        ctx.strokeStyle = win ? T.trading.buyOrder : T.trading.sellOrder;
+        ctx.lineWidth = 1.5;
         ctx.setLineDash([3, 2]);
         ctx.beginPath();
         ctx.moveTo(entryX, entryY);
@@ -668,114 +637,138 @@ export function CandleProfileChart({
         ctx.stroke();
         ctx.setLineDash([]);
 
-        ctx.fillStyle = pos.side === "long" ? "#00c087" : "#f6465d";
+        ctx.fillStyle = T.chrome.accentBlue;
         ctx.beginPath();
-        if (pos.side === "long") {
-          ctx.moveTo(entryX, entryY - 5);
-          ctx.lineTo(entryX - 4.5, entryY + 4);
-          ctx.lineTo(entryX + 4.5, entryY + 4);
-        } else {
-          ctx.moveTo(entryX, entryY + 5);
-          ctx.lineTo(entryX - 4.5, entryY - 4);
-          ctx.lineTo(entryX + 4.5, entryY - 4);
-        }
-        ctx.closePath();
+        ctx.arc(entryX, entryY, 4, 0, Math.PI * 2);
         ctx.fill();
 
         const rTxt = `${(pos.rMultiple ?? 0) >= 0 ? "+" : ""}${(pos.rMultiple ?? 0).toFixed(2)}R`;
-        ctx.fillStyle = win ? "#064e3b" : "#4c0519";
+        ctx.fillStyle = win ? T.trading.buyOrder : T.trading.sellOrder;
         ctx.fillRect(exitX - 18, exitY - 15, 38, 13);
-        ctx.fillStyle = win ? "#6ee7b7" : "#fda4af";
-        ctx.font = "600 9px ui-monospace, monospace";
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = "600 9px 'Segoe UI', monospace";
         ctx.fillText(rTxt, exitX - 14, exitY - 5.5);
       }
     }
 
-    // Zone drag preview
+    // 14. Zone draw preview
     if (drawZoneMode && drawStartPrice !== null && drawCurrentPrice !== null) {
       const y1 = priceToY(Math.max(drawStartPrice, drawCurrentPrice));
       const y2 = priceToY(Math.min(drawStartPrice, drawCurrentPrice));
-      ctx.fillStyle = "rgba(56, 189, 248, 0.14)";
-      ctx.fillRect(padLeft, y1, plotWidth, Math.max(2, y2 - y1));
-      ctx.strokeStyle = "#38bdf8";
-      ctx.lineWidth = 1.2;
-      ctx.strokeRect(padLeft, y1, plotWidth, Math.max(2, y2 - y1));
+      ctx.fillStyle = "rgba(59, 239, 240, 0.16)";
+      ctx.fillRect(padLeft, y1, axisX - padLeft, Math.max(2, y2 - y1));
+      ctx.strokeStyle = T.indicators.levelCyan;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(padLeft, y1, axisX - padLeft, Math.max(2, y2 - y1));
     }
 
-    // Last Price pill on right axis
+    // 15. Extended Current Price Dashed Line + Axis Pill (exact ATAS ExtendPriceLine + AxisCurrentBackColor)
     const lastCandle = visibleSlice[visibleSlice.length - 1];
     if (lastCandle) {
       const ly = priceToY(lastCandle.close);
       const isUp = lastCandle.close >= lastCandle.open;
-      ctx.fillStyle = isUp ? "#00a876" : "#dc354d";
-      ctx.fillRect(axisX + 1, ly - 8, layout.axisRightWidth - 3, 16);
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "600 10px ui-monospace, monospace";
+      ctx.strokeStyle = isUp ? T.candles.bull : bearCandleColor;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(padLeft, ly);
+      ctx.lineTo(axisX, ly);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = T.chrome.axisCurrentBg; // #363A45
+      ctx.fillRect(axisX + 1, ly - 8, layout.axisRightWidth - 2, 16);
+      ctx.fillStyle = T.chrome.axisCurrentFg; // #F1F1F1
+      ctx.font = "600 10px 'Segoe UI', monospace";
       ctx.fillText(lastCandle.close.toFixed(2), axisX + 6, ly + 3.5);
     }
 
-    // Time Axis labels
-    ctx.fillStyle = "#586070";
-    ctx.font = "9.5px ui-monospace, monospace";
+    // 16. ATAS Top-Left Status / OHLC + Indicator Overlay Text (ShowOhlcValues + ShowIndicatorsList)
+    const inspectBar =
+      mousePos && visibleSlice.length > 0
+        ? visibleSlice[
+            Math.max(
+              0,
+              Math.min(
+                visibleSlice.length - 1,
+                Math.floor(((mousePos.x - padLeft) / plotWidth) * visibleSlice.length)
+              )
+            )
+          ]
+        : lastCandle;
+    if (inspectBar) {
+      ctx.font = "600 10.5px 'Segoe UI', ui-monospace, monospace";
+      ctx.fillStyle = T.chrome.textPrimary;
+      const head = `${instrumentLabel} · ${timeframeLabel}   O ${inspectBar.open.toFixed(2)}  H ${inspectBar.high.toFixed(2)}  L ${inspectBar.low.toFixed(2)}  C ${inspectBar.close.toFixed(2)}  V ${inspectBar.volume >= 10 ? inspectBar.volume.toFixed(0) : inspectBar.volume.toFixed(2)}`;
+      ctx.fillText(head, 10, 14);
+
+      ctx.font = "9.5px 'Segoe UI', sans-serif";
+      ctx.fillStyle = T.chrome.textSecondary;
+      ctx.fillText(indicatorBadges.join("  ·  "), 10, 28);
+    }
+
+    // 17. Time Axis Labels
+    ctx.fillStyle = T.chrome.textSecondary;
+    ctx.font = "9.5px 'Segoe UI', monospace";
     const labelEvery = Math.max(1, Math.floor(visibleSlice.length / 7));
     for (let i = 0; i < visibleSlice.length; i += labelEvery) {
       const x = padLeft + i * stepX + stepX / 2;
       ctx.fillText(formatPTTime(visibleSlice[i].ts), x - 14, dims.height - 6);
     }
 
-    // Synced hover line
+    // Synced hover vertical line
     if (hoverTs && !mousePos) {
       const idx = visibleSlice.findIndex((c) => c.ts >= hoverTs);
       if (idx !== -1) {
         const hx = Math.round(padLeft + idx * stepX + stepX / 2) + 0.5;
-        ctx.strokeStyle = "rgba(139, 148, 165, 0.28)";
-        ctx.setLineDash([2, 3]);
+        ctx.strokeStyle = "rgba(149, 152, 161, 0.4)";
+        ctx.setLineDash([3, 3]);
         ctx.beginPath();
         ctx.moveTo(hx, padTop);
-        ctx.lineTo(hx, padTop + priceHeight + volHeight);
+        ctx.lineTo(hx, timeAxisY);
         ctx.stroke();
         ctx.setLineDash([]);
       }
     }
 
-    // Crosshair
+    // 18. ATAS Crosshair (CrosshairPen: #9598A1 dashed)
     if (mousePos) {
       const { x, y } = mousePos;
       const pickColor =
         pickPriceMode === "stop"
-          ? "#f6465d"
+          ? T.trading.sellOrder
           : pickPriceMode === "t1" || pickPriceMode === "t2"
-            ? "#00c087"
+            ? T.trading.buyOrder
             : pickPriceMode === "entry"
-              ? "#d4a03a"
-              : "rgba(139, 148, 165, 0.36)";
+              ? "#FFFF00"
+              : T.canvas.crosshair;
 
       ctx.strokeStyle = pickColor;
-      ctx.lineWidth = pickPriceMode ? 1.2 : 0.9;
-      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = pickPriceMode ? 1.3 : 1;
+      ctx.setLineDash([4, 3]);
       ctx.beginPath();
-      ctx.moveTo(x, padTop);
-      ctx.lineTo(x, padTop + priceHeight + volHeight);
-      ctx.moveTo(padLeft, y);
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, timeAxisY);
+      ctx.moveTo(0, y);
       ctx.lineTo(axisX, y);
       ctx.stroke();
       ctx.setLineDash([]);
 
       const hp = yToPrice(y);
-      ctx.fillStyle = "#202633";
-      ctx.fillRect(axisX + 1, y - 8, layout.axisRightWidth - 3, 16);
-      ctx.fillStyle = pickPriceMode ? pickColor : "#e6e9ef";
-      ctx.font = "600 10px ui-monospace, monospace";
+      ctx.fillStyle = T.chrome.axisCurrentBg;
+      ctx.fillRect(axisX + 1, y - 8, layout.axisRightWidth - 2, 16);
+      ctx.fillStyle = pickPriceMode ? pickColor : T.chrome.axisCurrentFg;
+      ctx.font = "600 10px 'Segoe UI', monospace";
       ctx.fillText(hp.toFixed(2), axisX + 6, y + 3.5);
 
       if (pickPriceMode) {
-        ctx.fillStyle = "#12161f";
-        ctx.fillRect(x + 10, y - 16, 128, 18);
+        ctx.fillStyle = T.chrome.panelBg;
+        ctx.fillRect(x + 10, y - 16, 132, 18);
         ctx.strokeStyle = pickColor;
         ctx.lineWidth = 1;
-        ctx.strokeRect(x + 10, y - 16, 128, 18);
+        ctx.strokeRect(x + 10, y - 16, 132, 18);
         ctx.fillStyle = pickColor;
-        ctx.font = "600 9.5px ui-monospace, monospace";
+        ctx.font = "600 9.5px 'Segoe UI', monospace";
         ctx.fillText(`SET ${pickPriceMode.toUpperCase()} ${hp.toFixed(2)}`, x + 15, y - 4);
       }
     }
@@ -790,6 +783,8 @@ export function CandleProfileChart({
     activeProfile,
     nakedPocs,
     vwapMap,
+    fpByTs,
+    footprintBars.length,
     bigTrades,
     positions,
     pendingOrders,
@@ -801,16 +796,11 @@ export function CandleProfileChart({
     drawStartPrice,
     drawCurrentPrice,
     show1OZGrid,
+    bearCandleColor,
+    instrumentLabel,
+    timeframeLabel,
+    indicatorBadges,
   ]);
-
-  const hoveredCandle = useMemo(() => {
-    if (!mousePos || visibleSlice.length === 0)
-      return visibleSlice[visibleSlice.length - 1] ?? null;
-    const idx = Math.floor(
-      ((mousePos.x - layout.padLeft) / layout.plotWidth) * visibleSlice.length
-    );
-    return visibleSlice[Math.max(0, Math.min(visibleSlice.length - 1, idx))] ?? null;
-  }, [mousePos, visibleSlice, layout]);
 
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -890,65 +880,28 @@ export function CandleProfileChart({
   };
 
   return (
-    <div className="flex flex-col bg-[#0b0d11] overflow-hidden h-full">
-      <div className="flex h-7 shrink-0 items-center justify-between gap-2 border-b border-[#1c212b] bg-[#0f1217] px-2.5 text-[11px]">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="font-medium text-[#e6e9ef]">{title}</span>
-          {subtitle && (
-            <span className="hidden md:inline truncate text-[10px] text-[#586070]">
-              {subtitle}
-            </span>
-          )}
-          {drawZoneMode && (
-            <span className="text-[10px] font-medium text-sky-400">
-              Drag to mark zone
-            </span>
-          )}
-          {pickPriceMode && (
-            <span className="text-[10px] font-semibold text-[#eab854]">
-              Click chart for {pickPriceMode.toUpperCase()}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2.5">
-          {hoveredCandle && (
-            <div className="hidden sm:flex items-center gap-2 font-mono-num text-[10px] text-[#8b94a5]">
-              <span>O {hoveredCandle.open.toFixed(2)}</span>
-              <span className="text-[#00c087]">H {hoveredCandle.high.toFixed(2)}</span>
-              <span className="text-[#f6465d]">L {hoveredCandle.low.toFixed(2)}</span>
-              <span
-                className={
-                  hoveredCandle.close >= hoveredCandle.open
-                    ? "text-[#00c087] font-medium"
-                    : "text-[#f6465d] font-medium"
-                }
-              >
-                C {hoveredCandle.close.toFixed(2)}
-              </span>
-            </div>
-          )}
-          {headerRight}
-        </div>
-      </div>
-      <div ref={containerRef} className={`relative flex-1 w-full ${heightClass}`}>
-        <canvas
-          ref={canvasRef}
-          className={`block h-full w-full ${
-            drawZoneMode || pickPriceMode
-              ? "cursor-crosshair"
-              : "cursor-grab active:cursor-grabbing"
-          }`}
-          onWheel={handleWheel}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={() => {
-            setMousePos(null);
-            setDragPan(null);
-            if (onHoverTs) onHoverTs(null);
-          }}
-        />
-      </div>
+    <div
+      ref={containerRef}
+      title={title}
+      className={`relative w-full overflow-hidden ${heightClass}`}
+    >
+      <canvas
+        ref={canvasRef}
+        className={`block h-full w-full ${
+          drawZoneMode || pickPriceMode
+            ? "cursor-crosshair"
+            : "cursor-grab active:cursor-grabbing"
+        }`}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={() => {
+          setMousePos(null);
+          setDragPan(null);
+          if (onHoverTs) onHoverTs(null);
+        }}
+      />
     </div>
   );
 }

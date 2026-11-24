@@ -1,18 +1,17 @@
 @import "tailwindcss";
 
 :root {
-  --bg-canvas: #0b0d11;
-  --bg-surface: #0f1217;
-  --bg-elevated: #151922;
-  --bg-hover: #1b212d;
-  --border-hairline: #1c212b;
-  --border-muted: #262d3b;
-  --text-primary: #e6e9ef;
-  --text-secondary: #8b94a5;
-  --text-muted: #586070;
-  --accent-bull: #00c087;
-  --accent-bear: #f6465d;
-  --accent-gold: #d4a03a;
+  --atas-window: #111620;
+  --atas-panel: #151b26;
+  --atas-dom: #1a2333;
+  --atas-border: #2a2e39;
+  --atas-sep: #434651;
+  --atas-text: #f1f1f1;
+  --atas-muted: #abaeb8;
+  --atas-buy: #089981;
+  --atas-sell: #f2385a;
+  --atas-cyan: #3beff0;
+  --atas-azure: #00a0ff;
 }
 
 * {
@@ -23,62 +22,57 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background-color: var(--bg-canvas);
-  color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", sans-serif;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  background-color: var(--atas-window);
+  color: var(--atas-text);
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
 
 .font-mono-num {
-  font-family: "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
 }
 
-/* Native dark inputs */
 select,
 input,
 textarea {
   color-scheme: dark;
 }
 
-/* Ultra-clean subtle scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #111620;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #232936;
-  border-radius: 99px;
+  background: #2a2e39;
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #343d50;
+  background: #434651;
 }
 
-/* Custom thin range scrubber */
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   height: 3px;
-  background: #222836;
-  border-radius: 99px;
+  background: #2a2e39;
+  border-radius: 2px;
   outline: none;
 }
 
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 11px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: #e6e9ef;
-  border: 2px solid #0b0d11;
+  background: #3beff0;
+  border: 1.5px solid #151b26;
   cursor: pointer;
 }

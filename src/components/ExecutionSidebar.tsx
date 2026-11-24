@@ -71,20 +71,21 @@ interface ExecutionSidebarProps {
     stop?: number;
     t1?: number;
     t2?: number;
+    side?: OrderSide;
   };
   onClearPickedPrice: (field: "entry" | "stop" | "t1" | "t2") => void;
 }
 
 const MODEL1_STEPS = [
   "Location: price reached key zone",
-  "No acceptance (closed back inside 1-2 M5)",
+  "No acceptance (closed inside 1-2 M5)",
   "Absorption + trapped prints at extreme",
   "Aggression flip (delta, imbalances, CVD)",
   "First valid pullback toward zone holds",
 ];
 
 const MODEL2_STEPS = [
-  "Breakout held (did not chase candle)",
+  "Breakout held (no breakout candle chase)",
   "Acceptance: 6+ M5 bars (30m) beyond",
   "Retest of broken level from other side",
   "Absorption on retest + trend aggression",
@@ -142,6 +143,11 @@ export function ExecutionSidebar({
   const [note, setNote] = useState<string>("");
   const [checkedSteps, setCheckedSteps] = useState<Record<number, boolean>>({});
   const [skipNote, setSkipNote] = useState<string>("");
+
+  // Sync side if user clicked Bid/Ask directly in ATAS SmartDOM
+  React.useEffect(() => {
+    if (pickedPrices.side) setSide(pickedPrices.side);
+  }, [pickedPrices.side]);
 
   const activeZone = useMemo(
     () => zones.find((z) => z.id === activeZoneId) ?? zones[0] ?? null,
@@ -258,17 +264,6 @@ export function ExecutionSidebar({
   const blocked = warnings.some((w) => w.severity === "block");
   const stepsList = model === "model1_reversal" ? MODEL1_STEPS : MODEL2_STEPS;
   const checkedCount = stepsList.filter((_, idx) => checkedSteps[idx]).length;
-
-  const eightyPctTarget = useMemo(() => {
-    if (!previousDayProfile) return null;
-    if (side === "long" && currentPrice <= previousDayProfile.poc) {
-      return { label: "80% Rule -> PD VAH", price: previousDayProfile.vah };
-    }
-    if (side === "short" && currentPrice >= previousDayProfile.poc) {
-      return { label: "80% Rule -> PD VAL", price: previousDayProfile.val };
-    }
-    return null;
-  }, [previousDayProfile, side, currentPrice]);
 
   const snapTargetsFromProfile = () => {
     onClearPickedPrice("stop");
@@ -390,17 +385,17 @@ export function ExecutionSidebar({
   }, [openPosition, currentPrice]);
 
   return (
-    <aside className="flex h-full flex-col bg-[#0f1217] text-xs select-none">
-      {/* Compact Active Zone + Section 3 Readout */}
-      <div className="border-b border-[#1c212b] px-3 py-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[10px] font-medium uppercase tracking-wider text-[#6e7787]">
-            Zone Read
+    <aside className="flex h-full flex-col bg-[#151B26] text-xs select-none border-l border-[#2A2E39]">
+      {/* ATAS Chart Trader Header + Zone Acceptance Readout */}
+      <div className="border-b border-[#2A2E39] bg-[#1A2333] px-2.5 py-2">
+        <div className="flex items-center justify-between gap-1.5">
+          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-[#F1F1F1]">
+            Chart Trader
           </span>
           <select
             value={activeZone?.id ?? ""}
             onChange={(e) => onSelectZone(e.target.value)}
-            className="max-w-[190px] truncate rounded bg-[#151922] px-2 py-0.5 text-[11px] text-[#e6e9ef] border border-[#222836] focus:outline-none"
+            className="max-w-[165px] truncate rounded-xs bg-[#111620] px-1.5 py-0.5 text-[10.5px] text-[#F1F1F1] border border-[#2A2E39] focus:outline-none"
           >
             {zones.map((z) => (
               <option key={z.id} value={z.id}>
@@ -410,27 +405,27 @@ export function ExecutionSidebar({
           </select>
         </div>
         {acceptanceRead && (
-          <div className="mt-2 flex items-center justify-between text-[11px]">
+          <div className="mt-1.5 flex items-center justify-between text-[10.5px]">
             <span
-              className={`font-medium ${
+              className={`font-semibold ${
                 acceptanceRead.status === "rejection"
-                  ? "text-[#00c087]"
+                  ? "text-[#089981]"
                   : acceptanceRead.status === "acceptance"
-                    ? "text-[#e6e9ef]"
+                    ? "text-[#3BEFF0]"
                     : acceptanceRead.status === "unclear"
-                      ? "text-[#d4a03a]"
-                      : "text-[#6e7787]"
+                      ? "text-[#FFFF00]"
+                      : "text-[#ABAEB8]"
               }`}
             >
               {acceptanceRead.status === "rejection"
-                ? "Rejection (Watch M1)"
+                ? "Rejection (M1)"
                 : acceptanceRead.status === "acceptance"
-                  ? "Acceptance (Watch M2)"
+                  ? "Acceptance (M2)"
                   : acceptanceRead.status === "unclear"
-                    ? "Unclear (No Trade)"
-                    : "Waiting for Touch"}
+                    ? "Unclear (Skip)"
+                    : "Untested"}
             </span>
-            <span className="font-mono-num text-[10px] text-[#7d8594]">
+            <span className="font-mono-num text-[10px] text-[#ABAEB8]">
               {acceptanceRead.barsBeyondCount} M5 · {acceptanceRead.minutesBeyond}m ·{" "}
               {acceptanceRead.closesBeyondCount} cls
             </span>
@@ -438,71 +433,70 @@ export function ExecutionSidebar({
         )}
       </div>
 
-      {/* Rail Sub-Tabs: Trade Ticket vs Model Checklist */}
-      <div className="grid grid-cols-2 border-b border-[#1c212b] text-[11px]">
+      {/* Sub-Tabs */}
+      <div className="grid grid-cols-2 border-b border-[#2A2E39] bg-[#131822] text-[11px]">
         <button
           type="button"
           onClick={() => setRailTab("order")}
-          className={`py-2 font-medium transition border-b-2 ${
+          className={`py-1.5 font-medium transition border-t-2 ${
             railTab === "order"
-              ? "border-[#e6e9ef] text-[#e6e9ef]"
-              : "border-transparent text-[#6e7787] hover:text-[#b4bccb]"
+              ? "border-[#2962FF] bg-[#151B26] text-[#F1F1F1]"
+              : "border-transparent text-[#ABAEB8] hover:text-white"
           }`}
         >
-          Order Ticket
+          Order
         </button>
         <button
           type="button"
           onClick={() => setRailTab("rules")}
-          className={`py-2 font-medium transition border-b-2 ${
+          className={`py-1.5 font-medium transition border-t-2 ${
             railTab === "rules"
-              ? "border-[#e6e9ef] text-[#e6e9ef]"
-              : "border-transparent text-[#6e7787] hover:text-[#b4bccb]"
+              ? "border-[#2962FF] bg-[#151B26] text-[#F1F1F1]"
+              : "border-transparent text-[#ABAEB8] hover:text-white"
           }`}
         >
-          Checklist ({checkedCount}/{stepsList.length})
+          Rules ({checkedCount}/{stepsList.length})
         </button>
       </div>
 
-      {/* Scrollable Inner Rail Body */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
-        {/* Active Working Order Banner */}
+      <div className="flex-1 overflow-y-auto px-2.5 py-2.5 space-y-2.5">
+        {/* Working Pending Orders */}
         {pendingOrders.map((ord) => (
           <div
             key={ord.id}
-            className="rounded border border-[#d4a03a]/40 bg-[#181611] p-2.5"
+            className="rounded-xs border border-[#2962FF]/60 bg-[#1A2333] p-2"
           >
             <div className="flex items-center justify-between">
-              <span className="font-mono-num text-[11px] font-semibold text-[#eab854]">
+              <span className="font-mono-num text-[10.5px] font-semibold text-[#3BEFF0]">
                 WORKING {ord.side.toUpperCase()} {ord.orderType.toUpperCase()}
               </span>
               <button
                 type="button"
                 onClick={() => onCancelPendingOrder(ord.id)}
-                className="flex items-center gap-0.5 text-[10px] text-[#8b94a5] hover:text-[#f6465d]"
+                className="flex items-center gap-0.5 text-[10px] text-[#ABAEB8] hover:text-[#F2385A]"
               >
                 <X className="h-3 w-3" /> Cancel
               </button>
             </div>
-            <div className="mt-1.5 flex justify-between font-mono-num text-[10px] text-[#b4bccb]">
+            <div className="mt-1 flex justify-between font-mono-num text-[10px] text-[#D1D4DC]">
               <span>Trig {ord.triggerPriceExec.toFixed(2)}</span>
-              <span className="text-[#f6465d]">Inv {ord.invalidationPriceExec.toFixed(2)}</span>
-              <span className="text-[#00c087]">T2 {ord.t2PriceExec.toFixed(1)}</span>
+              <span className="text-[#F2385A]">Inv {ord.invalidationPriceExec.toFixed(2)}</span>
+              <span className="text-[#089981]">T2 {ord.t2PriceExec.toFixed(1)}</span>
             </div>
           </div>
         ))}
 
-        {/* Active Open Position */}
+        {/* Open Position */}
         {openPosition && openStats && (
-          <div className="rounded border border-[#2a3346] bg-[#141822] p-2.5">
+          <div className="rounded-xs border border-[#434651] bg-[#1A2333] p-2">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold text-[#e6e9ef]">
-                OPEN {openPosition.side.toUpperCase()} {openPosition.contracts}×{" "}
+              <span className="text-[10.5px] font-semibold text-[#F1F1F1]">
+                {openPosition.side.toUpperCase()} {openPosition.contracts}×{" "}
                 {openPosition.contract}
               </span>
               <span
                 className={`font-mono-num text-xs font-bold ${
-                  openStats.net >= 0 ? "text-[#00c087]" : "text-[#f6465d]"
+                  openStats.net >= 0 ? "text-[#089981]" : "text-[#F2385A]"
                 }`}
               >
                 {openStats.net >= 0 ? "+" : ""}${openStats.net.toFixed(2)} (
@@ -510,39 +504,39 @@ export function ExecutionSidebar({
                 {openStats.r.toFixed(2)}R)
               </span>
             </div>
-            <div className="mt-2 grid grid-cols-4 gap-1 font-mono-num text-[10px] text-[#8b94a5]">
+            <div className="mt-1.5 grid grid-cols-4 gap-1 font-mono-num text-[10px] text-[#ABAEB8]">
               <div>
-                <div className="text-[9px] text-[#586070]">FILL</div>
-                <div className="text-[#e6e9ef]">{openPosition.entryPriceExec.toFixed(2)}</div>
+                <div className="text-[9px]">FILL</div>
+                <div className="text-[#F1F1F1]">{openPosition.entryPriceExec.toFixed(2)}</div>
               </div>
               <div>
-                <div className="text-[9px] text-[#f6465d]">SL</div>
+                <div className="text-[9px] text-[#F2385A]">SL</div>
                 <div>{openPosition.stopPriceExec.toFixed(2)}</div>
               </div>
               <div>
-                <div className="text-[9px] text-[#00c087]">T1</div>
+                <div className="text-[9px] text-[#089981]">T1</div>
                 <div>{openPosition.t1PriceExec.toFixed(2)}</div>
               </div>
               <div>
-                <div className="text-[9px] text-[#00c087]">T2</div>
+                <div className="text-[9px] text-[#3BEFF0]">T2</div>
                 <div>{openPosition.t2PriceExec.toFixed(2)}</div>
               </div>
             </div>
-            <div className="mt-2.5 grid grid-cols-3 gap-1">
+            <div className="mt-2 grid grid-cols-3 gap-1">
               <button
                 type="button"
                 onClick={() => onMoveStopToBE(openPosition.id)}
                 disabled={openPosition.movedToBreakeven}
-                className="rounded bg-[#1e2433] py-1 text-[10px] text-[#c8cfdc] hover:bg-[#283044] disabled:opacity-40"
+                className="rounded-xs bg-[#2A2E39] py-1 text-[10px] text-[#F1F1F1] hover:bg-[#363A45] disabled:opacity-40"
               >
-                {openPosition.movedToBreakeven ? "@ BE" : "Move BE"}
+                {openPosition.movedToBreakeven ? "@ BE" : "BE"}
               </button>
               <button
                 type="button"
                 onClick={() =>
                   onClosePosition(openPosition.id, currentPrice, "invalidation")
                 }
-                className="rounded bg-[#26181e] py-1 text-[10px] text-[#f6465d] hover:bg-[#351e27]"
+                className="rounded-xs bg-[#F2385A]/20 py-1 text-[10px] text-[#F2385A] hover:bg-[#F2385A]/30"
               >
                 Invalidated
               </button>
@@ -551,9 +545,9 @@ export function ExecutionSidebar({
                 onClick={() =>
                   onClosePosition(openPosition.id, currentPrice, "manual")
                 }
-                className="rounded bg-[#e6e9ef] py-1 text-[10px] font-semibold text-[#0b0d11] hover:bg-white"
+                className="rounded-xs bg-[#F1F1F1] py-1 text-[10px] font-semibold text-[#111620] hover:bg-white"
               >
-                Flatten Now
+                Flatten
               </button>
             </div>
           </div>
@@ -561,35 +555,35 @@ export function ExecutionSidebar({
 
         {railTab === "order" ? (
           <>
-            {/* Long / Short Institutional Segmented Switch */}
-            <div className="grid grid-cols-2 rounded-md bg-[#151922] p-0.5">
+            {/* ATAS Buy (#089981) / Sell (#F2385A) Buttons */}
+            <div className="grid grid-cols-2 gap-1">
               <button
                 type="button"
                 onClick={() => setSide("long")}
-                className={`rounded py-1.5 text-[11px] font-semibold transition ${
+                className={`rounded-xs py-1.5 text-[11px] font-semibold transition ${
                   side === "long"
-                    ? "bg-[#00c087] text-[#071410]"
-                    : "text-[#8b94a5] hover:text-[#e6e9ef]"
+                    ? "bg-[#089981] text-white"
+                    : "bg-[#1A2333] text-[#ABAEB8] border border-[#2A2E39]"
                 }`}
               >
-                Long
+                Buy / Long
               </button>
               <button
                 type="button"
                 onClick={() => setSide("short")}
-                className={`rounded py-1.5 text-[11px] font-semibold transition ${
+                className={`rounded-xs py-1.5 text-[11px] font-semibold transition ${
                   side === "short"
-                    ? "bg-[#f6465d] text-white"
-                    : "text-[#8b94a5] hover:text-[#e6e9ef]"
+                    ? "bg-[#F2385A] text-white"
+                    : "bg-[#1A2333] text-[#ABAEB8] border border-[#2A2E39]"
                 }`}
               >
-                Short
+                Sell / Short
               </button>
             </div>
 
-            {/* Order Type + Model compact row */}
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1 text-[11px]">
+            {/* Order Type + Model */}
+            <div className="flex items-center justify-between gap-1 text-[10.5px]">
+              <div className="flex items-center gap-0.5">
                 {(
                   [
                     { id: "stop", label: "Stop" },
@@ -601,47 +595,47 @@ export function ExecutionSidebar({
                     key={ot.id}
                     type="button"
                     onClick={() => setOrderType(ot.id)}
-                    className={`rounded px-2 py-0.5 transition ${
+                    className={`rounded-xs px-2 py-0.5 ${
                       orderType === ot.id
-                        ? "bg-[#222836] text-[#e6e9ef] font-medium"
-                        : "text-[#6e7787] hover:text-[#b4bccb]"
+                        ? "bg-[#2962FF] text-white font-medium"
+                        : "bg-[#1A2333] text-[#ABAEB8]"
                     }`}
                   >
                     {ot.label}
                   </button>
                 ))}
               </div>
-              <div className="flex items-center gap-1 text-[10px]">
+              <div className="flex items-center gap-0.5 text-[10px]">
                 <button
                   type="button"
                   onClick={() => setModel("model1_reversal")}
-                  className={`rounded px-1.5 py-0.5 ${
+                  className={`rounded-xs px-1.5 py-0.5 ${
                     model === "model1_reversal"
-                      ? "bg-[#222836] text-[#e6e9ef] font-medium"
-                      : "text-[#6e7787]"
+                      ? "bg-[#363A45] text-white font-medium"
+                      : "bg-[#1A2333] text-[#ABAEB8]"
                   }`}
                 >
-                  M1 Rev
+                  M1
                 </button>
                 <button
                   type="button"
                   onClick={() => setModel("model2_continuation")}
-                  className={`rounded px-1.5 py-0.5 ${
+                  className={`rounded-xs px-1.5 py-0.5 ${
                     model === "model2_continuation"
-                      ? "bg-[#222836] text-[#e6e9ef] font-medium"
-                      : "text-[#6e7787]"
+                      ? "bg-[#363A45] text-white font-medium"
+                      : "bg-[#1A2333] text-[#ABAEB8]"
                   }`}
                 >
-                  M2 Cont
+                  M2
                 </button>
               </div>
             </div>
 
-            {/* Price Inputs (Hyperliquid / TradingView clean inline rows) */}
+            {/* Price Inputs */}
             <div className="space-y-1.5">
               {orderType !== "market" && (
-                <div className="flex items-center gap-1.5 rounded bg-[#151922] px-2.5 py-1.5 border border-[#1f2532]">
-                  <span className="text-[10px] text-[#7d8594] w-14">
+                <div className="flex items-center gap-1 rounded-xs bg-[#1A2333] px-2 py-1 border border-[#2A2E39]">
+                  <span className="text-[10px] text-[#ABAEB8] w-12">
                     {orderType === "stop" ? "Trigger" : "Limit"}
                   </span>
                   <input
@@ -657,13 +651,13 @@ export function ExecutionSidebar({
                       onClearPickedPrice("entry");
                       setCustomEntry(e.target.value);
                     }}
-                    className="w-full bg-transparent text-right font-mono-num text-xs text-[#e6e9ef] focus:outline-none"
+                    className="w-full bg-transparent text-right font-mono-num text-[11px] text-[#F1F1F1] focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={snapTriggerOneTickBeyondBar}
-                    title="Snap 1 tick beyond last M5 high/low (Section 8)"
-                    className="shrink-0 text-[9px] text-[#8b94a5] hover:text-[#e6e9ef]"
+                    title="Snap 1 tick beyond last M5 bar"
+                    className="text-[9px] text-[#3BEFF0] hover:underline"
                   >
                     +1t
                   </button>
@@ -672,18 +666,17 @@ export function ExecutionSidebar({
                     onClick={() =>
                       onSetPickPriceMode(pickPriceMode === "entry" ? null : "entry")
                     }
-                    title="Click chart to set trigger"
-                    className={`shrink-0 ${
-                      pickPriceMode === "entry" ? "text-[#d4a03a]" : "text-[#586070] hover:text-[#e6e9ef]"
-                    }`}
+                    className={
+                      pickPriceMode === "entry" ? "text-[#FFFF00]" : "text-[#ABAEB8] hover:text-white"
+                    }
                   >
-                    <Crosshair className="h-3.5 w-3.5" />
+                    <Crosshair className="h-3 w-3" />
                   </button>
                 </div>
               )}
 
-              <div className="flex items-center gap-1.5 rounded bg-[#151922] px-2.5 py-1.5 border border-[#1f2532]">
-                <span className="text-[10px] text-[#f6465d] w-14">Stop</span>
+              <div className="flex items-center gap-1 rounded-xs bg-[#1A2333] px-2 py-1 border border-[#2A2E39]">
+                <span className="text-[10px] text-[#F2385A] w-12">Stop</span>
                 <input
                   type="number"
                   step="0.1"
@@ -693,25 +686,24 @@ export function ExecutionSidebar({
                     onClearPickedPrice("stop");
                     setCustomStop(e.target.value);
                   }}
-                  className="w-full bg-transparent text-right font-mono-num text-xs text-[#e6e9ef] focus:outline-none"
+                  className="w-full bg-transparent text-right font-mono-num text-[11px] text-[#F1F1F1] focus:outline-none"
                 />
                 <button
                   type="button"
                   onClick={() =>
                     onSetPickPriceMode(pickPriceMode === "stop" ? null : "stop")
                   }
-                  title="Click chart to set stop"
-                  className={`shrink-0 ${
-                    pickPriceMode === "stop" ? "text-[#f6465d]" : "text-[#586070] hover:text-[#e6e9ef]"
-                  }`}
+                  className={
+                    pickPriceMode === "stop" ? "text-[#F2385A]" : "text-[#ABAEB8] hover:text-white"
+                  }
                 >
-                  <Crosshair className="h-3.5 w-3.5" />
+                  <Crosshair className="h-3 w-3" />
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-1.5">
-                <div className="flex items-center gap-1 rounded bg-[#151922] px-2 py-1.5 border border-[#1f2532]">
-                  <span className="text-[10px] text-[#00c087]">T1</span>
+              <div className="grid grid-cols-2 gap-1">
+                <div className="flex items-center gap-1 rounded-xs bg-[#1A2333] px-1.5 py-1 border border-[#2A2E39]">
+                  <span className="text-[10px] text-[#089981]">T1</span>
                   <input
                     type="number"
                     step="0.25"
@@ -721,23 +713,19 @@ export function ExecutionSidebar({
                       onClearPickedPrice("t1");
                       setCustomT1(e.target.value);
                     }}
-                    className="w-full bg-transparent text-right font-mono-num text-[11px] text-[#e6e9ef] focus:outline-none"
+                    className="w-full bg-transparent text-right font-mono-num text-[11px] text-[#F1F1F1] focus:outline-none"
                   />
                   <button
                     type="button"
-                    onClick={() =>
-                      onSetPickPriceMode(pickPriceMode === "t1" ? null : "t1")
-                    }
-                    className={`shrink-0 ${
-                      pickPriceMode === "t1" ? "text-[#00c087]" : "text-[#586070] hover:text-[#e6e9ef]"
-                    }`}
+                    onClick={() => onSetPickPriceMode(pickPriceMode === "t1" ? null : "t1")}
+                    className={pickPriceMode === "t1" ? "text-[#089981]" : "text-[#ABAEB8]"}
                   >
                     <Crosshair className="h-3 w-3" />
                   </button>
                 </div>
 
-                <div className="flex items-center gap-1 rounded bg-[#151922] px-2 py-1.5 border border-[#1f2532]">
-                  <span className="text-[10px] text-[#00c087]">T2</span>
+                <div className="flex items-center gap-1 rounded-xs bg-[#1A2333] px-1.5 py-1 border border-[#2A2E39]">
+                  <span className="text-[10px] text-[#3BEFF0]">T2</span>
                   <input
                     type="number"
                     step="0.25"
@@ -747,51 +735,33 @@ export function ExecutionSidebar({
                       onClearPickedPrice("t2");
                       setCustomT2(e.target.value);
                     }}
-                    className="w-full bg-transparent text-right font-mono-num text-[11px] text-[#e6e9ef] focus:outline-none"
+                    className="w-full bg-transparent text-right font-mono-num text-[11px] text-[#F1F1F1] focus:outline-none"
                   />
                   <button
                     type="button"
-                    onClick={() =>
-                      onSetPickPriceMode(pickPriceMode === "t2" ? null : "t2")
-                    }
-                    className={`shrink-0 ${
-                      pickPriceMode === "t2" ? "text-[#00c087]" : "text-[#586070] hover:text-[#e6e9ef]"
-                    }`}
+                    onClick={() => onSetPickPriceMode(pickPriceMode === "t2" ? null : "t2")}
+                    className={pickPriceMode === "t2" ? "text-[#3BEFF0]" : "text-[#ABAEB8]"}
                   >
                     <Crosshair className="h-3 w-3" />
                   </button>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between text-[10px] text-[#6e7787] pt-0.5">
-                <button
-                  type="button"
-                  onClick={snapTargetsFromProfile}
-                  className="flex items-center gap-1 text-[#8b94a5] hover:text-[#e6e9ef]"
-                >
-                  <Target className="h-3 w-3" /> Snap Profile Levels
-                </button>
-                {eightyPctTarget && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onClearPickedPrice("t2");
-                      setCustomT2(eightyPctTarget.price.toFixed(2));
-                    }}
-                    className="text-[#8b94a5] hover:text-[#e6e9ef]"
-                  >
-                    {eightyPctTarget.label}
-                  </button>
-                )}
-              </div>
+              <button
+                type="button"
+                onClick={snapTargetsFromProfile}
+                className="flex items-center gap-1 text-[10px] text-[#3BEFF0] hover:underline"
+              >
+                <Target className="h-3 w-3" /> Snap Profile Targets &amp; Zone Stop
+              </button>
             </div>
 
-            {/* Compact Contract + Entry Timing */}
-            <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+            {/* Contract & Timing */}
+            <div className="grid grid-cols-2 gap-1 text-[10.5px]">
               <select
                 value={contract}
                 onChange={(e) => setContract(e.target.value as ContractType)}
-                className="rounded bg-[#151922] px-2 py-1.5 font-mono-num text-[11px] text-[#e6e9ef] border border-[#1f2532]"
+                className="rounded-xs bg-[#1A2333] px-1.5 py-1 font-mono-num text-[#F1F1F1] border border-[#2A2E39]"
               >
                 <option value="1OZ">1OZ ($1/pt)</option>
                 <option value="MGC">MGC ($10/pt)</option>
@@ -800,101 +770,95 @@ export function ExecutionSidebar({
               <select
                 value={entryTiming}
                 onChange={(e) => setEntryTiming(e.target.value as EntryTiming)}
-                className="rounded bg-[#151922] px-2 py-1.5 text-[11px] text-[#e6e9ef] border border-[#1f2532]"
+                className="rounded-xs bg-[#1A2333] px-1.5 py-1 text-[#F1F1F1] border border-[#2A2E39]"
               >
-                <option value="first_valid_pullback">1st Valid Pullback</option>
-                <option value="first_touch">First Touch (Leak)</option>
-                <option value="early">Early Entry</option>
+                <option value="first_valid_pullback">1st Pullback</option>
+                <option value="first_touch">1st Touch (Leak)</option>
+                <option value="early">Early</option>
                 <option value="late_chase">Late Chase</option>
               </select>
             </div>
 
-            {/* Clean Risk / Reward Spec Table */}
-            <div className="space-y-1 border-y border-[#1c212b] py-2 font-mono-num text-[10.5px]">
+            {/* Risk Math */}
+            <div className="space-y-1 border-y border-[#2A2E39] py-1.5 font-mono-num text-[10px]">
               <div className="flex justify-between">
-                <span className="text-[#6e7787]">Outward {contract} Stop</span>
-                <span className="text-[#e6e9ef]">
-                  {sizing.stopExec.toFixed(2)}{" "}
-                  <span className="text-[#6e7787]">({sizing.stopDistancePts.toFixed(2)}pt)</span>
+                <span className="text-[#ABAEB8]">Outward {contract} SL</span>
+                <span className="text-[#F1F1F1]">
+                  {sizing.stopExec.toFixed(2)} ({sizing.stopDistancePts.toFixed(2)}pt)
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#6e7787]">All-in Risk (${accountBalance})</span>
-                <span className={sizing.oversizedForAccount ? "text-[#f6465d]" : "text-[#e6e9ef]"}>
+                <span className="text-[#ABAEB8]">Risk (${accountBalance})</span>
+                <span className={sizing.oversizedForAccount ? "text-[#F2385A]" : "text-[#F1F1F1]"}>
                   ${sizing.allInRiskPerContract.toFixed(2)} ({sizing.accountRiskPct}%)
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#6e7787]">Net Reward (after comm)</span>
+                <span className="text-[#ABAEB8]">Net T1 / T2</span>
                 <span>
-                  <span className="text-[#00c087]">{sizing.t1R.toFixed(1)}R</span>
-                  <span className="text-[#586070]"> / </span>
-                  <span className={sizing.t2BelowMin2R ? "text-[#d4a03a]" : "text-[#00c087] font-semibold"}>
+                  <span className="text-[#089981]">{sizing.t1R.toFixed(1)}R</span> /{" "}
+                  <span className={sizing.t2BelowMin2R ? "text-[#FFFF00]" : "text-[#3BEFF0] font-semibold"}>
                     {sizing.t2R.toFixed(1)}R
                   </span>
                 </span>
               </div>
             </div>
 
-            {/* Collapsible Guardrail Pill (Never pushes Buy button off-screen) */}
+            {/* Guardrails */}
             {warnings.length > 0 ? (
-              <div className="rounded border border-[#2d2618] bg-[#16140e]">
+              <div className="rounded-xs border border-[#434651] bg-[#1A2333]">
                 <button
                   type="button"
                   onClick={() => setShowWarningsDetail((v) => !v)}
-                  className="flex w-full items-center justify-between px-2.5 py-1.5 text-[10.5px]"
+                  className="flex w-full items-center justify-between px-2 py-1 text-[10px]"
                 >
                   <span
-                    className={`flex items-center gap-1.5 font-medium ${
-                      blocked ? "text-[#f6465d]" : "text-[#d4a03a]"
+                    className={`flex items-center gap-1 font-medium ${
+                      blocked ? "text-[#F2385A]" : "text-[#FFFF00]"
                     }`}
                   >
-                    {blocked ? (
-                      <ShieldAlert className="h-3.5 w-3.5" />
-                    ) : (
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                    )}
-                    {warnings.length} guardrail {warnings.length === 1 ? "flag" : "flags"}:{" "}
-                    {warnings[0].title.slice(0, 26)}
+                    {blocked ? <ShieldAlert className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+                    {warnings.length} rule {warnings.length === 1 ? "flag" : "flags"}:{" "}
+                    {warnings[0].title.slice(0, 22)}
                   </span>
                   {showWarningsDetail ? (
-                    <ChevronUp className="h-3.5 w-3.5 text-[#7d8594]" />
+                    <ChevronUp className="h-3 w-3 text-[#ABAEB8]" />
                   ) : (
-                    <ChevronDown className="h-3.5 w-3.5 text-[#7d8594]" />
+                    <ChevronDown className="h-3 w-3 text-[#ABAEB8]" />
                   )}
                 </button>
                 {showWarningsDetail && (
-                  <div className="border-t border-[#262115] px-2.5 py-2 space-y-1.5 text-[10px] text-[#b4bccb]">
+                  <div className="border-t border-[#2A2E39] px-2 py-1.5 space-y-1 text-[10px] text-[#ABAEB8]">
                     {warnings.map((w) => (
                       <div key={w.id}>
-                        <div className="font-semibold text-[#e6e9ef]">{w.title}</div>
-                        <div className="text-[#8b94a5]">{w.detail}</div>
+                        <div className="font-semibold text-[#F1F1F1]">{w.title}</div>
+                        <div>{w.detail}</div>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
             ) : (
-              <div className="flex items-center gap-1.5 text-[10.5px] text-[#00c087]">
-                <Check className="h-3.5 w-3.5" /> All Asia Value rules clean
+              <div className="flex items-center gap-1 text-[10px] text-[#089981]">
+                <Check className="h-3 w-3" /> Model rules clean
               </div>
             )}
 
-            {/* Primary Order CTA */}
+            {/* Primary Order Button */}
             <button
               type="button"
               disabled={blocked || Boolean(openPosition) || currentPrice <= 0}
               onClick={handleSubmitOrder}
-              className={`w-full rounded-md py-2.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              className={`w-full rounded-xs py-2 text-[11px] font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
                 side === "long"
-                  ? "bg-[#00c087] text-[#06140f] hover:bg-[#00d495]"
-                  : "bg-[#f6465d] text-white hover:bg-[#ff566c]"
+                  ? "bg-[#089981] hover:bg-[#0ab195]"
+                  : "bg-[#F2385A] hover:bg-[#ff4b6b]"
               }`}
             >
               {openPosition
                 ? "Position Open"
                 : blocked
-                  ? "Blocked by Daily Limit"
+                  ? "Daily Rule Cap"
                   : `${orderType === "market" ? "Market" : `Working ${orderType.toUpperCase()}`} ${side.toUpperCase()} ${
                       contract === "1OZ" && accountBalance <= 400
                         ? 1
@@ -906,23 +870,21 @@ export function ExecutionSidebar({
               type="text"
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="Optional 1-line order flow note..."
-              className="w-full rounded bg-[#151922] px-2.5 py-1.5 text-[11px] text-[#e6e9ef] placeholder:text-[#586070] border border-[#1f2532] focus:outline-none"
+              placeholder="1-line order flow note..."
+              className="w-full rounded-xs bg-[#1A2333] px-2 py-1 text-[10.5px] text-[#F1F1F1] placeholder:text-[#787D8C] border border-[#2A2E39]"
             />
           </>
         ) : (
-          /* Checklist & Settings Tab */
+          /* Checklist & Skip Tab */
           <>
-            <div className="space-y-1.5">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-[#6e7787]">
-                {model === "model1_reversal"
-                  ? "Model 1: Reversal Steps"
-                  : "Model 2: Continuation Steps"}
+            <div className="space-y-1">
+              <div className="text-[10px] uppercase tracking-wider text-[#ABAEB8]">
+                {model === "model1_reversal" ? "Model 1: Reversal" : "Model 2: Continuation"}
               </div>
               {stepsList.map((label, idx) => (
                 <label
                   key={label}
-                  className="flex cursor-pointer items-start gap-2 rounded bg-[#151922] px-2.5 py-2 text-[11px] text-[#c8cfdc] hover:bg-[#1a202c]"
+                  className="flex cursor-pointer items-start gap-2 rounded-xs bg-[#1A2333] px-2 py-1.5 text-[10.5px] text-[#D1D4DC]"
                 >
                   <input
                     type="checkbox"
@@ -933,76 +895,62 @@ export function ExecutionSidebar({
                         [idx]: e.target.checked,
                       }))
                     }
-                    className="mt-0.5 h-3.5 w-3.5 accent-[#00c087]"
+                    className="mt-0.5 h-3 w-3 accent-[#089981]"
                   />
-                  <span className={checkedSteps[idx] ? "text-[#00c087]" : ""}>
+                  <span className={checkedSteps[idx] ? "text-[#3BEFF0]" : ""}>
                     {label}
                   </span>
                 </label>
               ))}
             </div>
 
-            <div className="space-y-2 border-t border-[#1c212b] pt-2.5">
-              <div>
-                <label className="text-[10px] text-[#6e7787]">Scenario #1-6</label>
-                <select
-                  value={scenario}
-                  onChange={(e) => setScenario(Number(e.target.value) as ScenarioNumber)}
-                  className="mt-1 w-full rounded bg-[#151922] px-2 py-1.5 text-[11px] text-[#e6e9ef] border border-[#1f2532]"
-                >
-                  {([1, 2, 3, 4, 5, 6] as ScenarioNumber[]).map((n) => (
-                    <option key={n} value={n}>
-                      {SCENARIO_META[n].shortTitle}
-                    </option>
-                  ))}
-                </select>
+            <div className="space-y-1.5 border-t border-[#2A2E39] pt-2">
+              <select
+                value={scenario}
+                onChange={(e) => setScenario(Number(e.target.value) as ScenarioNumber)}
+                className="w-full rounded-xs bg-[#1A2333] px-2 py-1 text-[10.5px] text-[#F1F1F1] border border-[#2A2E39]"
+              >
+                {([1, 2, 3, 4, 5, 6] as ScenarioNumber[]).map((n) => (
+                  <option key={n} value={n}>
+                    {SCENARIO_META[n].shortTitle}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={setupTag}
+                onChange={(e) => setSetupTag(e.target.value as SetupTag)}
+                className="w-full rounded-xs bg-[#1A2333] px-2 py-1 text-[10.5px] text-[#F1F1F1] border border-[#2A2E39]"
+              >
+                <option value="fade_vah_val">Fade VAH / VAL</option>
+                <option value="pd_poc_bounce">PD POC / Stacked Bounce</option>
+                <option value="hvn_reversal">HVN Reversal</option>
+                <option value="lvn_continuation">LVN Continuation</option>
+                <option value="trapped_participant">Trapped Participant</option>
+                <option value="failed_auction">Failed Auction</option>
+              </select>
+              <div className="grid grid-cols-2 gap-1.5">
+                <input
+                  type="number"
+                  value={accountBalance}
+                  onChange={(e) =>
+                    onAccountBalanceChange(Math.max(50, Number(e.target.value) || 300))
+                  }
+                  className="rounded-xs bg-[#1A2333] px-2 py-1 font-mono-num text-[10.5px] text-[#F1F1F1] border border-[#2A2E39]"
+                  title="Account Balance ($)"
+                />
+                <input
+                  type="number"
+                  step="0.5"
+                  value={riskPercent}
+                  onChange={(e) =>
+                    setRiskPercent(Math.max(0.25, Number(e.target.value) || 2))
+                  }
+                  className="rounded-xs bg-[#1A2333] px-2 py-1 font-mono-num text-[10.5px] text-[#F1F1F1] border border-[#2A2E39]"
+                  title="Risk %"
+                />
               </div>
-
-              <div>
-                <label className="text-[10px] text-[#6e7787]">Setup Tag</label>
-                <select
-                  value={setupTag}
-                  onChange={(e) => setSetupTag(e.target.value as SetupTag)}
-                  className="mt-1 w-full rounded bg-[#151922] px-2 py-1.5 text-[11px] text-[#e6e9ef] border border-[#1f2532]"
-                >
-                  <option value="fade_vah_val">Fade VAH / VAL</option>
-                  <option value="pd_poc_bounce">PD POC / Stacked Bounce</option>
-                  <option value="hvn_reversal">HVN Reversal</option>
-                  <option value="lvn_continuation">LVN Continuation</option>
-                  <option value="trapped_participant">Trapped Participant</option>
-                  <option value="failed_auction">Failed Auction + Reclaim</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] text-[#6e7787]">Account ($)</label>
-                  <input
-                    type="number"
-                    value={accountBalance}
-                    onChange={(e) =>
-                      onAccountBalanceChange(Math.max(50, Number(e.target.value) || 300))
-                    }
-                    className="mt-1 w-full rounded bg-[#151922] px-2 py-1.5 font-mono-num text-[11px] text-[#e6e9ef] border border-[#1f2532]"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-[#6e7787]">Risk %</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={riskPercent}
-                    onChange={(e) =>
-                      setRiskPercent(Math.max(0.25, Number(e.target.value) || 2))
-                    }
-                    className="mt-1 w-full rounded bg-[#151922] px-2 py-1.5 font-mono-num text-[11px] text-[#e6e9ef] border border-[#1f2532]"
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between text-[10px] text-[#6e7787]">
-                <span>Default Stop Dist</span>
+              <div className="flex items-center justify-between text-[10px] text-[#ABAEB8]">
+                <span>Default Stop</span>
                 <div className="flex gap-1">
                   {[2.5, 3.5, 4.5, 6.0].map((d) => (
                     <button
@@ -1013,10 +961,10 @@ export function ExecutionSidebar({
                         setT1OffsetPts(d * 2);
                         setT2OffsetPts(d * 3.2);
                       }}
-                      className={`rounded px-1.5 py-0.5 font-mono-num ${
+                      className={`rounded-xs px-1.5 py-0.5 font-mono-num ${
                         stopOffsetPts === d
-                          ? "bg-[#242c3c] text-[#e6e9ef]"
-                          : "bg-[#151922] text-[#6e7787]"
+                          ? "bg-[#2962FF] text-white"
+                          : "bg-[#1A2333] text-[#ABAEB8]"
                       }`}
                     >
                       {d}pt
@@ -1026,31 +974,25 @@ export function ExecutionSidebar({
               </div>
             </div>
 
-            {/* Log Disciplined No-Trade Skip */}
-            <div className="border-t border-[#1c212b] pt-2.5">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-[#6e7787]">
-                Log Disciplined No-Trade
-              </div>
-              <div className="mt-1.5 flex gap-1.5">
+            <div className="border-t border-[#2A2E39] pt-2">
+              <div className="flex gap-1">
                 <input
                   type="text"
                   value={skipNote}
                   onChange={(e) => setSkipNote(e.target.value)}
                   placeholder="Why skipped?"
-                  className="min-w-0 flex-1 rounded bg-[#151922] px-2 py-1.5 text-[11px] text-[#e6e9ef] placeholder:text-[#586070] border border-[#1f2532]"
+                  className="min-w-0 flex-1 rounded-xs bg-[#1A2333] px-2 py-1 text-[10.5px] text-[#F1F1F1] border border-[#2A2E39]"
                 />
                 <button
                   type="button"
                   onClick={() => {
                     onLogSkippedTouch({
                       scenario,
-                      note:
-                        skipNote.trim() ||
-                        `No-Trade at ${activeZone?.label ?? "level"} (unclear)`,
+                      note: skipNote.trim() || `No-Trade @ ${activeZone?.label ?? "zone"}`,
                     });
                     setSkipNote("");
                   }}
-                  className="shrink-0 rounded bg-[#222836] px-2.5 py-1.5 text-[11px] font-medium text-[#e6e9ef] hover:bg-[#2d3548]"
+                  className="rounded-xs bg-[#2A2E39] px-2 py-1 text-[10.5px] text-[#F1F1F1] hover:bg-[#363A45]"
                 >
                   Log Skip
                 </button>

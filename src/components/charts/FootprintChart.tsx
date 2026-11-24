@@ -3,10 +3,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { FootprintBar, FootprintPriceRow, KeyLevelZone } from "@/lib/types";
 import { formatPTTime } from "@/lib/goldMath";
+import { ATAS_ASIA_THEME as T } from "@/lib/atasTheme";
 
 interface FootprintChartProps {
   title?: string;
+  instrumentLabel?: string;
   bars: FootprintBar[];
+  vwapSeries?: Array<{ ts: number; vwap: number }>;
   hasRealAggressorTape: boolean;
   zones: KeyLevelZone[];
   activeZoneId?: string | null;
@@ -17,7 +20,6 @@ interface FootprintChartProps {
   onOpenCsvModal?: () => void;
   heightClass?: string;
   defaultVisibleBars?: number;
-  headerRight?: React.ReactNode;
 }
 
 function fmtVol(v: number): string {
@@ -28,9 +30,19 @@ function fmtVol(v: number): string {
   return v.toFixed(2).replace(/^0/, "");
 }
 
+/**
+ * Exact ATAS X Footprint (FP2 G1.W1 from Asia_Template_Fixed.aws):
+ * - Background: DarkBlue (#00008B) -> Black vertical gradient
+ * - Bid: #F71427 | Ask: #007900 | POC: #FF4900 | Text & 150% Imbalances: White
+ * - SecondClusters: #2962FF cobalt-blue volumeHistogram beside each cluster
+ * - Yellow VWAP + 5px translucent Absorption bars + BigTrades ellipses
+ * - ClusterStatistic footer: Delta (#007900/#F71427) + Volume (#434651) + optional ΔStr/CVD
+ */
 export function FootprintChart({
   title,
+  instrumentLabel = "/GC:XCEC",
   bars,
+  vwapSeries = [],
   hasRealAggressorTape,
   zones,
   activeZoneId,
@@ -39,15 +51,15 @@ export function FootprintChart({
   onModeChange,
   onSwitchToPaxg,
   onOpenCsvModal,
-  heightClass = "h-full min-h-[260px]",
-  defaultVisibleBars = 8,
-  headerRight,
+  heightClass = "h-full min-h-[280px]",
+  defaultVisibleBars = 7,
 }: FootprintChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [visibleCount, setVisibleCount] = useState(defaultVisibleBars);
   const [rightOffset, setRightOffset] = useState(0);
-  const [dims, setDims] = useState({ width: 580, height: 340 });
+  const [dims, setDims] = useState({ width: 580, height: 420 });
+  const [showExtendedStats, setShowExtendedStats] = useState(false);
   const [hoverInfo, setHoverInfo] = useState<{
     bar: FootprintBar;
     row: FootprintPriceRow | null;
@@ -72,7 +84,7 @@ export function FootprintChart({
   }, []);
 
   useEffect(() => {
-    setRightOffset((prev) => Math.min(prev, Math.max(0, bars.length - 4)));
+    setRightOffset((prev) => Math.min(prev, Math.max(0, bars.length - 3)));
   }, [bars.length]);
 
   const visibleBars = useMemo(() => {
@@ -82,14 +94,20 @@ export function FootprintChart({
     return bars.slice(start, end);
   }, [bars, visibleCount, rightOffset]);
 
+  const vwapMap = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const v of vwapSeries) m.set(v.ts, v.vwap);
+    return m;
+  }, [vwapSeries]);
+
   const geom = useMemo(() => {
-    const padLeft = 44;
-    const padRight = 56;
-    const padTop = 20;
-    const statsRows = 5; // Delta, ΔStr%, MaxΔ/MinΔ -> Delta, ΔStr%, CVD, Vol, Trades
-    const statsRowH = 14;
-    const statsHeight = statsRows * statsRowH + 18;
-    const plotW = Math.max(100, dims.width - padLeft - padRight);
+    const padLeft = 52;
+    const padRight = 64;
+    const padTop = 32;
+    const statsRows = showExtendedStats ? 4 : 2; // ATAS default: Delta + Volume (exact RowsOrder: 2:Delta, 9:Volume)
+    const statsRowH = 18;
+    const statsHeight = statsRows * statsRowH + 20;
+    const plotW = Math.max(100, dims.width - padLeft - padRight - 14);
     const plotH = Math.max(80, dims.height - padTop - statsHeight);
 
     let lo = Infinity;
@@ -102,7 +120,7 @@ export function FootprintChart({
     const minP = Number.isFinite(lo) ? quantize(lo) - priceStep : 3500;
     const maxP = Number.isFinite(hi) ? quantize(hi) + priceStep : 3510;
     const numPriceRows = Math.max(4, Math.round((maxP - minP) / priceStep) + 1);
-    const rowH = Math.max(11, Math.min(20, plotH / numPriceRows));
+    const rowH = Math.max(12, Math.min(22, plotH / numPriceRows));
     const colW = plotW / Math.max(1, visibleBars.length);
 
     return {
@@ -120,7 +138,7 @@ export function FootprintChart({
       rowH,
       colW,
     };
-  }, [dims, visibleBars, priceStep]);
+  }, [dims, visibleBars, priceStep, showExtendedStats]);
 
   const priceToY = (p: number) =>
     geom.padTop +
@@ -139,21 +157,6 @@ export function FootprintChart({
     canvas.height = dims.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    ctx.fillStyle = "#0b0d11";
-    ctx.fillRect(0, 0, dims.width, dims.height);
-
-    if (visibleBars.length === 0) {
-      ctx.fillStyle = "#586070";
-      ctx.font = "11px ui-monospace, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(
-        "Step replay forward to populate M5 footprint clusters",
-        dims.width / 2,
-        dims.height / 2
-      );
-      return;
-    }
-
     const {
       padLeft,
       padRight,
@@ -168,48 +171,81 @@ export function FootprintChart({
       colW,
     } = geom;
     const axisX = dims.width - padRight;
+    const statsTop = padTop + plotH;
+    const timeAxisY = dims.height - 18;
 
-    // Axis hairlines
-    ctx.strokeStyle = "#171b24";
+    // 1. EXACT ATAS Footprint Gradient: DarkBlue (#00008B) -> Black (#000000)
+    const grad = ctx.createLinearGradient(0, 0, 0, statsTop);
+    grad.addColorStop(0, T.canvas.clusterBgTop);
+    grad.addColorStop(1, T.canvas.bgBottom);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, axisX, statsTop);
+
+    // Axis & ClusterStatistic panels
+    ctx.fillStyle = T.chrome.panelBg;
+    ctx.fillRect(axisX, 0, padRight, dims.height);
+    ctx.fillStyle = T.clusterStats.bg;
+    ctx.fillRect(0, statsTop, axisX, timeAxisY - statsTop);
+    ctx.fillStyle = T.chrome.panelBg;
+    ctx.fillRect(0, timeAxisY, dims.width, 18);
+
+    // Panel separator (#434651)
+    ctx.strokeStyle = T.chrome.separator;
     ctx.lineWidth = 1;
     ctx.beginPath();
+    ctx.moveTo(0, statsTop + 0.5);
+    ctx.lineTo(dims.width, statsTop + 0.5);
     ctx.moveTo(axisX + 0.5, 0);
-    ctx.lineTo(axisX + 0.5, padTop + plotH);
-    ctx.moveTo(0, padTop + plotH + 0.5);
-    ctx.lineTo(dims.width, padTop + plotH + 0.5);
+    ctx.lineTo(axisX + 0.5, dims.height);
     ctx.stroke();
 
-    // Active Zone band only (clean, zero clutter)
+    if (visibleBars.length === 0) {
+      ctx.fillStyle = T.chrome.textSecondary;
+      ctx.font = "11px 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(
+        "Step replay forward to populate M5 clusters",
+        axisX / 2,
+        statsTop / 2
+      );
+      return;
+    }
+
+    // Active Zone band
     const activeZ = zones.find((z) => z.id === activeZoneId);
     if (activeZ) {
       const y1 = priceToY(activeZ.high);
       const y2 = priceToY(activeZ.low) + rowH;
-      if (y2 >= padTop && y1 <= padTop + plotH) {
-        ctx.fillStyle = "rgba(212, 160, 58, 0.08)";
-        ctx.fillRect(
-          padLeft,
-          Math.max(padTop, y1),
-          plotW,
-          Math.min(plotH, y2 - y1)
-        );
+      if (y2 >= padTop && y1 <= statsTop) {
+        ctx.fillStyle = "rgba(59, 239, 240, 0.09)";
+        ctx.fillRect(padLeft, Math.max(padTop, y1), axisX - padLeft, Math.min(plotH, y2 - y1));
+        ctx.strokeStyle = T.indicators.levelCyan;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(padLeft, Math.max(padTop, y1));
+        ctx.lineTo(axisX, Math.max(padTop, y1));
+        ctx.moveTo(padLeft, Math.min(statsTop, y2));
+        ctx.lineTo(axisX, Math.min(statsTop, y2));
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
 
-    // Price axis
-    ctx.font = "9.5px ui-monospace, monospace";
+    // Price Axis ticks (#ABAEB8)
+    ctx.font = "10px 'Segoe UI', monospace";
     ctx.textAlign = "left";
     const priceLabelSkip = Math.max(1, Math.ceil(14 / rowH));
     for (let r = 0; r < numPriceRows; r += priceLabelSkip) {
       const p = Number((maxP - r * priceStep).toFixed(2));
       const y = priceToY(p);
-      if (y < padTop - 4 || y > padTop + plotH) continue;
-      ctx.strokeStyle = "#11151d";
+      if (y < padTop - 4 || y > statsTop - 4) continue;
+      ctx.strokeStyle = T.canvas.grid;
       ctx.beginPath();
       ctx.moveTo(padLeft, y + rowH / 2);
       ctx.lineTo(axisX, y + rowH / 2);
       ctx.stroke();
 
-      ctx.fillStyle = "#626b7c";
+      ctx.fillStyle = T.chrome.textSecondary;
       ctx.fillText(p.toFixed(2), axisX + 6, y + rowH / 2 + 3);
     }
 
@@ -220,175 +256,276 @@ export function FootprintChart({
 
     visibleBars.forEach((bar, idx) => {
       const colX = padLeft + idx * colW;
-      const innerW = colW - 6;
       const barCenter = colX + colW / 2;
 
       if (hoverInfo && hoverInfo.colIdx === idx) {
-        ctx.fillStyle = "rgba(230, 233, 239, 0.035)";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
         ctx.fillRect(colX, padTop, colW, plotH + statsRows * statsRowH);
       }
 
-      // Top signal badge (clean single highest-priority flag)
-      let tag: { t: string; c: string } | null = null;
-      if (bar.aggressionFlipBull) tag = { t: "FLIP↑", c: "#00c087" };
-      else if (bar.aggressionFlipBear) tag = { t: "FLIP↓", c: "#f6465d" };
-      else if (bar.absorptionLow) tag = { t: "ABS↓", c: "#d4a03a" };
-      else if (bar.absorptionHigh) tag = { t: "ABS↑", c: "#d4a03a" };
-      else if (bar.cvdDivergenceBull || bar.cvdDivergenceBear) tag = { t: "DIV", c: "#93c5fd" };
-      else if (bar.exhaustionLow || bar.exhaustionHigh) tag = { t: "EXH", c: "#8b94a5" };
-
-      if (tag) {
-        ctx.font = "600 8.5px ui-monospace, monospace";
-        ctx.textAlign = "center";
-        ctx.fillStyle = tag.c;
-        ctx.fillText(tag.t, barCenter, 13);
+      // ATAS 5px Absorption Bands on Footprint
+      if (bar.absorptionLow) {
+        const y = priceToY(bar.low) + rowH / 2;
+        ctx.fillStyle = T.indicators.absorptionBull;
+        ctx.fillRect(colX + 2, y - 2.5, colW - 4, 5);
+      }
+      if (bar.absorptionHigh) {
+        const y = priceToY(bar.high) + rowH / 2;
+        ctx.fillStyle = T.indicators.absorptionBear;
+        ctx.fillRect(colX + 2, y - 2.5, colW - 4, 5);
       }
 
-      // Slim candle body indicator on far left of cluster
+      // ATAS Direction Marker on left edge of cluster (White up / Cyan #3BEFF0 down)
       const spineX = colX + 3;
       const yO = priceToY(bar.open) + rowH / 2;
       const yC = priceToY(bar.close) + rowH / 2;
-      ctx.fillStyle = bar.close >= bar.open ? "#00c087" : "#f6465d";
-      ctx.fillRect(spineX, Math.min(yO, yC), 2.5, Math.max(2, Math.abs(yC - yO)));
+      ctx.fillStyle = bar.close >= bar.open ? T.candles.bull : T.candles.bearCyan;
+      ctx.fillRect(spineX, Math.min(yO, yC), 3, Math.max(3, Math.abs(yC - yO)));
+
+      // Reserve right 22% of cluster column for ATAS SecondClusters Cobalt-Blue Volume Histogram (#2962FF)!
+      const secondW = mode === "bid_ask" && colW >= 78 ? Math.floor(colW * 0.2) : 0;
+      const mainX = colX + 8;
+      const mainW = colW - 12 - secondW;
 
       for (const row of bar.rows) {
         const ry = priceToY(row.price);
-        if (ry < padTop - rowH || ry > padTop + plotH) continue;
+        if (ry < padTop - rowH || ry > statsTop - 2) continue;
         const intensity = Math.min(1, row.totalVol / maxCellVol);
         const isHoveredCell =
           hoverInfo?.colIdx === idx && hoverInfo.row?.price === row.price;
 
         if (mode === "bid_ask") {
-          const halfW = (innerW - 7) / 2;
-          const cellX = colX + 8;
+          const halfW = (mainW - 2) / 2;
 
-          // Proportional subtle horizontal bars growing outward from center spine (Exocharts look)
-          const bidBarW = Math.max(2, (row.bidVol / maxCellVol) * halfW);
-          const askBarW = Math.max(2, (row.askVol / maxCellVol) * halfW);
+          // EXACT ATAS Bid (#F71427) & Ask (#007900) cluster fills
+          ctx.fillStyle = row.isPoc
+            ? T.clusters.pocVolume // Blazing orange #FF4900 for POC!
+            : `rgba(247, 20, 39, ${(0.24 + intensity * 0.65).toFixed(2)})`;
+          ctx.fillRect(mainX, ry + 0.5, halfW, Math.max(10, rowH - 1.5));
 
-          ctx.fillStyle = row.bidImbalance
-            ? "rgba(246, 70, 93, 0.38)"
-            : `rgba(246, 70, 93, ${(0.08 + intensity * 0.18).toFixed(2)})`;
-          ctx.fillRect(cellX + halfW - bidBarW, ry + 0.5, bidBarW, Math.max(9, rowH - 1.5));
+          ctx.fillStyle = row.isPoc
+            ? T.clusters.pocVolume
+            : `rgba(0, 121, 0, ${(0.24 + intensity * 0.65).toFixed(2)})`;
+          ctx.fillRect(mainX + halfW + 1, ry + 0.5, halfW, Math.max(10, rowH - 1.5));
 
-          ctx.fillStyle = row.askImbalance
-            ? "rgba(0, 192, 135, 0.38)"
-            : `rgba(0, 192, 135, ${(0.08 + intensity * 0.18).toFixed(2)})`;
-          ctx.fillRect(cellX + halfW + 1, ry + 0.5, askBarW, Math.max(9, rowH - 1.5));
-
-          if (isHoveredCell) {
-            ctx.strokeStyle = "#e6e9ef";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(cellX, ry + 0.5, innerW - 6, Math.max(9, rowH - 1.5));
-          } else if (row.isPoc) {
-            ctx.strokeStyle = "#d4a03a";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(cellX, ry + 0.5, innerW - 6, Math.max(9, rowH - 1.5));
+          // SecondClusters Cobalt-Blue (#2962FF) Volume Histogram on right side of cluster!
+          if (secondW > 4) {
+            const histW = Math.max(2, (row.totalVol / maxCellVol) * (secondW - 2));
+            ctx.fillStyle = row.isPoc ? T.clusters.pocVolume : T.clusters.secondClusterVol;
+            ctx.fillRect(mainX + mainW + 2, ry + 1, histW, Math.max(9, rowH - 2.5));
           }
 
-          if (colW >= 54 && rowH >= 10) {
-            ctx.font =
-              row.bidImbalance || row.askImbalance
-                ? "700 9px ui-monospace, monospace"
-                : "400 9px ui-monospace, monospace";
+          // Cell border (hovered white, POC blazing orange frame, or ATAS #2A2E39 border)
+          if (isHoveredCell) {
+            ctx.strokeStyle = "#FFFFFF";
+            ctx.lineWidth = 1.4;
+            ctx.strokeRect(mainX, ry + 0.5, mainW, Math.max(10, rowH - 1.5));
+          } else if (row.isPoc) {
+            ctx.strokeStyle = "#FFFF00";
+            ctx.lineWidth = 1.3;
+            ctx.strokeRect(mainX, ry + 0.5, mainW, Math.max(10, rowH - 1.5));
+          } else {
+            ctx.strokeStyle = T.clusters.border;
+            ctx.lineWidth = 0.6;
+            ctx.strokeRect(mainX, ry + 0.5, mainW, Math.max(10, rowH - 1.5));
+          }
+
+          // Text: White foreground, BOLD bright white for 150% Imbalances!
+          if (mainW >= 46 && rowH >= 11) {
             ctx.textAlign = "right";
-            ctx.fillStyle = row.bidImbalance ? "#ff8fa0" : "#9aa3b2";
-            ctx.fillText(fmtVol(row.bidVol), cellX + halfW - 2.5, ry + Math.min(rowH - 2, 10));
+            ctx.font = row.bidImbalance
+              ? "700 9.5px 'Segoe UI', monospace"
+              : "400 9px 'Segoe UI', monospace";
+            ctx.fillStyle = row.bidImbalance ? "#FFFFFF" : "rgba(255,255,255,0.86)";
+            ctx.fillText(fmtVol(row.bidVol), mainX + halfW - 2, ry + Math.min(rowH - 2, 11));
 
             ctx.textAlign = "left";
-            ctx.fillStyle = row.askImbalance ? "#5ef2c2" : "#9aa3b2";
-            ctx.fillText(fmtVol(row.askVol), cellX + halfW + 3.5, ry + Math.min(rowH - 2, 10));
+            ctx.font = row.askImbalance
+              ? "700 9.5px 'Segoe UI', monospace"
+              : "400 9px 'Segoe UI', monospace";
+            ctx.fillStyle = row.askImbalance ? "#FFFFFF" : "rgba(255,255,255,0.86)";
+            ctx.fillText(fmtVol(row.askVol), mainX + halfW + 3, ry + Math.min(rowH - 2, 11));
           }
         } else {
-          const cellX = colX + 8;
-          const cellW = innerW - 6;
+          // Delta cluster mode
           const isPos = row.delta >= 0;
-          ctx.fillStyle = isPos
-            ? `rgba(0, 192, 135, ${(0.1 + intensity * 0.42).toFixed(2)})`
-            : `rgba(246, 70, 93, ${(0.1 + intensity * 0.42).toFixed(2)})`;
-          ctx.fillRect(cellX, ry + 0.5, cellW, Math.max(9, rowH - 1.5));
+          ctx.fillStyle = row.isPoc
+            ? T.clusters.pocVolume
+            : isPos
+              ? `rgba(0, 121, 0, ${(0.25 + intensity * 0.7).toFixed(2)})`
+              : `rgba(247, 20, 39, ${(0.25 + intensity * 0.7).toFixed(2)})`;
+          ctx.fillRect(mainX, ry + 0.5, mainW + secondW, Math.max(10, rowH - 1.5));
 
-          if (isHoveredCell) {
-            ctx.strokeStyle = "#e6e9ef";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(cellX, ry + 0.5, cellW, Math.max(9, rowH - 1.5));
-          } else if (row.isPoc) {
-            ctx.strokeStyle = "#d4a03a";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(cellX, ry + 0.5, cellW, Math.max(9, rowH - 1.5));
+          if (isHoveredCell || row.isPoc) {
+            ctx.strokeStyle = isHoveredCell ? "#FFFFFF" : "#FFFF00";
+            ctx.lineWidth = 1.2;
+            ctx.strokeRect(mainX, ry + 0.5, mainW + secondW, Math.max(10, rowH - 1.5));
           }
 
-          if (colW >= 42 && rowH >= 10) {
-            ctx.font = "500 9px ui-monospace, monospace";
+          if (mainW >= 36 && rowH >= 11) {
+            ctx.font = "600 9px 'Segoe UI', monospace";
             ctx.textAlign = "center";
-            ctx.fillStyle = "#e6e9ef";
-            const sign = row.delta > 0 ? "+" : "";
+            ctx.fillStyle = "#FFFFFF";
             ctx.fillText(
-              `${sign}${fmtVol(row.delta)}`,
-              cellX + cellW / 2,
-              ry + Math.min(rowH - 2, 10)
+              `${row.delta > 0 ? "+" : ""}${fmtVol(row.delta)}`,
+              mainX + (mainW + secondW) / 2,
+              ry + Math.min(rowH - 2, 11)
             );
           }
         }
       }
 
-      // Column divider
-      ctx.strokeStyle = "#141820";
+      // BigTrades ellipses on footprint (exact cyan/magenta + blue/red)
+      for (const bt of bar.bigTrades) {
+        const cy = priceToY(bt.price) + rowH / 2;
+        if (cy < padTop || cy > statsTop) continue;
+        const r = bt.tier === "whale" ? 6 : 4;
+        const col =
+          bt.tier === "whale"
+            ? bt.side === "buy"
+              ? T.indicators.bigTradeWhaleBuy
+              : T.indicators.bigTradeWhaleSell
+            : bt.side === "buy"
+              ? T.indicators.bigTradeLargeBuy
+              : T.indicators.bigTradeLargeSell;
+        ctx.save();
+        ctx.globalAlpha = 0.65;
+        ctx.beginPath();
+        ctx.arc(barCenter, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = col;
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Column grid divider (#21252F)
+      ctx.strokeStyle = T.clusterStats.grid;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(Math.round(colX) + 0.5, padTop);
-      ctx.lineTo(Math.round(colX) + 0.5, dims.height - 16);
+      ctx.lineTo(Math.round(colX) + 0.5, timeAxisY);
       ctx.stroke();
 
-      // ClusterStatistic table footer
-      const statsTop = padTop + plotH + 2;
-      const cells = [
-        { val: bar.delta, text: (bar.delta > 0 ? "+" : "") + fmtVol(bar.delta), colorize: true },
-        {
-          val: bar.deltaStrengthPct,
-          text: `${bar.deltaStrengthPct > 0 ? "+" : ""}${Math.round(bar.deltaStrengthPct)}%`,
-          colorize: true,
-        },
-        { val: bar.cumDelta, text: (bar.cumDelta > 0 ? "+" : "") + fmtVol(bar.cumDelta), colorize: true },
-        { val: bar.totalVol, text: fmtVol(bar.totalVol), colorize: false },
-        { val: bar.tradeCount, text: String(bar.tradeCount), colorize: false },
-      ];
+      // ATAS ClusterStatistic Footer Rows (Delta + Volume exact from Asia_Template_Fixed.aws!)
+      const rowsData = showExtendedStats
+        ? [
+            { label: "Delta", val: bar.delta, text: (bar.delta > 0 ? "+" : "") + fmtVol(bar.delta), bg: bar.delta >= 0 ? T.clusterStats.askBg : T.clusterStats.bidBg },
+            { label: "Volume", val: bar.totalVol, text: fmtVol(bar.totalVol), bg: T.clusterStats.volumeBg },
+            { label: "ΔStr%", val: bar.deltaStrengthPct, text: `${bar.deltaStrengthPct > 0 ? "+" : ""}${Math.round(bar.deltaStrengthPct)}%`, bg: bar.deltaStrengthPct >= 0 ? "rgba(0,121,0,0.5)" : "rgba(247,20,39,0.5)" },
+            { label: "CVD", val: bar.cumDelta, text: (bar.cumDelta > 0 ? "+" : "") + fmtVol(bar.cumDelta), bg: bar.cumDelta >= 0 ? "rgba(0,121,0,0.45)" : "rgba(247,20,39,0.45)" },
+          ]
+        : [
+            { label: "Delta", val: bar.delta, text: (bar.delta > 0 ? "+" : "") + fmtVol(bar.delta), bg: bar.delta >= 0 ? T.clusterStats.askBg : T.clusterStats.bidBg },
+            { label: "Volume", val: bar.totalVol, text: fmtVol(bar.totalVol), bg: T.clusterStats.volumeBg },
+          ];
 
-      cells.forEach((cell, rIdx) => {
+      rowsData.forEach((cell, rIdx) => {
         const y = statsTop + rIdx * statsRowH;
-        if (cell.colorize) {
-          ctx.fillStyle =
-            cell.val >= 0 ? "rgba(0, 192, 135, 0.11)" : "rgba(246, 70, 93, 0.11)";
-          ctx.fillRect(colX + 1, y, colW - 2, statsRowH - 1);
-        }
-        ctx.fillStyle = cell.colorize
-          ? cell.val >= 0
-            ? "#00c087"
-            : "#f6465d"
-          : "#7d8594";
-        ctx.font = "9px ui-monospace, monospace";
+        ctx.fillStyle = cell.bg;
+        ctx.fillRect(colX + 1, y + 1, colW - 2, statsRowH - 2);
+        ctx.fillStyle = T.clusterStats.text;
+        ctx.font = "600 9.5px 'Segoe UI', monospace";
         ctx.textAlign = "center";
-        ctx.fillText(cell.text, barCenter, y + 10);
+        ctx.fillText(cell.text, barCenter, y + 12.5);
       });
 
-      ctx.fillStyle = "#586070";
-      ctx.font = "9px ui-monospace, monospace";
+      // Time axis label
+      ctx.fillStyle = T.chrome.textSecondary;
+      ctx.font = "9.5px 'Segoe UI', monospace";
       ctx.textAlign = "center";
-      ctx.fillText(formatPTTime(bar.ts), barCenter, dims.height - 4);
+      ctx.fillText(formatPTTime(bar.ts), barCenter, dims.height - 5);
     });
 
-    // Left ClusterStatistic labels
-    const statsTop = padTop + plotH + 2;
-    const labels = ["Delta", "ΔStr", "CVD", "Vol", "Trds"];
-    ctx.fillStyle = "#0e1116";
-    ctx.fillRect(0, statsTop, padLeft - 1, statsRows * statsRowH);
-    ctx.font = "500 9px ui-monospace, monospace";
+    // Yellow VWAP overlay across Footprint bars
+    if (vwapMap.size > 0) {
+      ctx.strokeStyle = T.indicators.vwap;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      let started = false;
+      visibleBars.forEach((b, idx) => {
+        const v = vwapMap.get(b.ts);
+        if (v === undefined) return;
+        const x = padLeft + idx * colW + colW / 2;
+        const y = priceToY(v) + rowH / 2;
+        if (y < padTop || y > statsTop) {
+          started = false;
+          return;
+        }
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+    }
+
+    // Left ClusterStatistic header labels
+    const statLabels = showExtendedStats
+      ? ["Delta", "Volume", "ΔStr%", "CVD"]
+      : ["Delta", "Volume"];
+    ctx.fillStyle = T.chrome.panelBg;
+    ctx.fillRect(0, statsTop + 1, padLeft - 1, statsRows * statsRowH);
+    ctx.font = "600 9.5px 'Segoe UI', monospace";
     ctx.textAlign = "left";
-    labels.forEach((lbl, rIdx) => {
-      ctx.fillStyle = "#626b7c";
-      ctx.fillText(lbl, 6, statsTop + rIdx * statsRowH + 10);
+    statLabels.forEach((lbl, rIdx) => {
+      ctx.fillStyle = T.chrome.textSecondary;
+      ctx.fillText(lbl, 6, statsTop + rIdx * statsRowH + 12.5);
     });
-  }, [dims, visibleBars, hasRealAggressorTape, zones, activeZoneId, priceStep, mode, geom, hoverInfo]);
+
+    // Current Last Price axis box
+    const lastBar = visibleBars[visibleBars.length - 1];
+    if (lastBar) {
+      const ly = priceToY(lastBar.close) + rowH / 2;
+      ctx.fillStyle = T.chrome.axisCurrentBg;
+      ctx.fillRect(axisX + 1, ly - 8, padRight - 2, 16);
+      ctx.fillStyle = T.chrome.axisCurrentFg;
+      ctx.font = "600 10px 'Segoe UI', monospace";
+      ctx.fillText(lastBar.close.toFixed(2), axisX + 6, ly + 3.5);
+    }
+
+    // Top-left ATAS status header inside canvas
+    ctx.textAlign = "left";
+    ctx.font = "600 10.5px 'Segoe UI', monospace";
+    ctx.fillStyle = T.chrome.textPrimary;
+    if (hoverInfo) {
+      const rowTxt = hoverInfo.row
+        ? `  $${hoverInfo.row.price.toFixed(2)}  Bid ${fmtVol(hoverInfo.row.bidVol)} × Ask ${fmtVol(hoverInfo.row.askVol)}  Δ ${hoverInfo.row.delta > 0 ? "+" : ""}${fmtVol(hoverInfo.row.delta)}`
+        : "";
+      ctx.fillText(
+        `${instrumentLabel} · M5 Clusters (${formatPTTime(hoverInfo.bar.ts)} PT)${rowTxt}`,
+        10,
+        14
+      );
+    } else {
+      ctx.fillText(
+        `${title ?? `${instrumentLabel} · M5 Clusters (${mode === "bid_ask" ? "Bid×Ask + Vol" : "Delta"})`}  ·  150% Imb · Step $${priceStep.toFixed(2)}`,
+        10,
+        14
+      );
+    }
+    ctx.font = "9px 'Segoe UI', sans-serif";
+    ctx.fillStyle = T.chrome.textSecondary;
+    ctx.fillText(
+      "VWAP · DeltaStrength · ClusterStatistic · Absorption (300%) · BigTrades",
+      10,
+      26
+    );
+  }, [
+    dims,
+    visibleBars,
+    vwapMap,
+    hasRealAggressorTape,
+    zones,
+    activeZoneId,
+    priceStep,
+    mode,
+    geom,
+    hoverInfo,
+    showExtendedStats,
+    instrumentLabel,
+    title,
+  ]);
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -397,9 +534,9 @@ export function FootprintChart({
 
     if (dragPan) {
       const dx = x - dragPan.startX;
-      const deltaCols = Math.round(dx / Math.max(20, geom.colW));
+      const deltaCols = Math.round(dx / Math.max(24, geom.colW));
       setRightOffset(
-        Math.max(0, Math.min(Math.max(0, bars.length - 4), dragPan.startOffset + deltaCols))
+        Math.max(0, Math.min(Math.max(0, bars.length - 3), dragPan.startOffset + deltaCols))
       );
       return;
     }
@@ -421,41 +558,19 @@ export function FootprintChart({
   };
 
   return (
-    <div className="flex flex-col bg-[#0b0d11] overflow-hidden h-full">
-      <div className="flex h-7 shrink-0 items-center justify-between gap-2 border-b border-[#1c212b] bg-[#0f1217] px-2.5 text-[11px]">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="font-medium text-[#e6e9ef]">
-            {title ?? `M5 Footprint · ${mode === "bid_ask" ? "Bid × Ask" : "Delta"}`}
-          </span>
-          {hoverInfo ? (
-            <div className="hidden md:flex items-center gap-2 font-mono-num text-[10px] text-[#8b94a5] truncate">
-              <span>{formatPTTime(hoverInfo.bar.ts)}</span>
-              {hoverInfo.row && (
-                <>
-                  <span className="text-[#d4a03a]">${hoverInfo.row.price.toFixed(2)}</span>
-                  <span className="text-[#f6465d]">B {fmtVol(hoverInfo.row.bidVol)}</span>
-                  <span className="text-[#00c087]">A {fmtVol(hoverInfo.row.askVol)}</span>
-                </>
-              )}
-              <span>ΔStr {hoverInfo.bar.deltaStrengthPct > 0 ? "+" : ""}{hoverInfo.bar.deltaStrengthPct}%</span>
-            </div>
-          ) : (
-            <span className="hidden md:inline font-mono-num text-[10px] text-[#586070]">
-              300% Imb · ${priceStep.toFixed(2)}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          {headerRight}
+    <div className="relative flex flex-col h-full overflow-hidden bg-[#000040]">
+      {/* Subtle floating top-right ATAS cluster controls */}
+      {hasRealAggressorTape && (
+        <div className="absolute right-[70px] top-1.5 z-10 flex items-center gap-1 rounded bg-[#151B26]/90 px-1.5 py-0.5 text-[10px] border border-[#2A2E39]">
           {onModeChange && (
-            <div className="flex items-center rounded bg-[#151922] p-0.5 text-[10px]">
+            <>
               <button
                 type="button"
                 onClick={() => onModeChange("bid_ask")}
-                className={`rounded-xs px-1.5 py-0.5 transition ${
+                className={`rounded-xs px-1.5 py-0.5 ${
                   mode === "bid_ask"
-                    ? "bg-[#252c3a] text-[#e6e9ef] font-medium"
-                    : "text-[#6e7787] hover:text-[#b4bccb]"
+                    ? "bg-[#2962FF] text-white font-medium"
+                    : "text-[#ABAEB8] hover:text-white"
                 }`}
               >
                 Bid×Ask
@@ -463,63 +578,67 @@ export function FootprintChart({
               <button
                 type="button"
                 onClick={() => onModeChange("delta")}
-                className={`rounded-xs px-1.5 py-0.5 transition ${
+                className={`rounded-xs px-1.5 py-0.5 ${
                   mode === "delta"
-                    ? "bg-[#252c3a] text-[#e6e9ef] font-medium"
-                    : "text-[#6e7787] hover:text-[#b4bccb]"
+                    ? "bg-[#2962FF] text-white font-medium"
+                    : "text-[#ABAEB8] hover:text-white"
                 }`}
               >
                 Delta
               </button>
-            </div>
+            </>
           )}
-          {hasRealAggressorTape && (
-            <div className="flex items-center gap-0.5 pl-1 text-[10px]">
-              <button
-                type="button"
-                onClick={() => setVisibleCount((c) => Math.max(4, c - 2))}
-                className="rounded px-1.5 py-0.5 text-[#8b94a5] hover:bg-[#1b212d] hover:text-[#e6e9ef]"
-              >
-                +
-              </button>
-              <button
-                type="button"
-                onClick={() => setVisibleCount((c) => Math.min(18, c + 2))}
-                className="rounded px-1.5 py-0.5 text-[#8b94a5] hover:bg-[#1b212d] hover:text-[#e6e9ef]"
-              >
-                -
-              </button>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => setShowExtendedStats((v) => !v)}
+            className="rounded-xs px-1.5 py-0.5 text-[#ABAEB8] hover:text-white"
+            title="Toggle extended ClusterStatistic rows"
+          >
+            {showExtendedStats ? "2 Rows" : "4 Rows"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setVisibleCount((c) => Math.max(4, c - 1))}
+            className="px-1 text-[#ABAEB8] hover:text-white"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            onClick={() => setVisibleCount((c) => Math.min(16, c + 1))}
+            className="px-1 text-[#ABAEB8] hover:text-white"
+          >
+            -
+          </button>
         </div>
-      </div>
+      )}
 
       <div ref={containerRef} className={`relative flex-1 w-full ${heightClass}`}>
         {!hasRealAggressorTape ? (
-          <div className="flex h-full flex-col items-center justify-center p-6 text-center">
-            <div className="max-w-sm border border-[#262d3b] bg-[#0f1217] p-4 rounded-md">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-[#d4a03a]">
+          <div className="flex h-full flex-col items-center justify-center bg-gradient-to-b from-[#00008B] to-black p-6 text-center">
+            <div className="max-w-sm rounded border border-[#2A2E39] bg-[#151B26]/95 p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[#3BEFF0]">
                 No Real Bid/Ask Aggressor Tape in OHLCV Feed
               </div>
-              <p className="mt-1.5 text-[11px] leading-relaxed text-[#8b94a5]">
+              <p className="mt-1.5 text-[11px] leading-relaxed text-[#ABAEB8]">
                 COMEX GC=F gives real candles and profiles, zero tick-level bid/ask side.
-                Footprint stays blank instead of fabricating fake numbers.
+                Clusters stay blank rather than faking footprint volume.
               </p>
               <div className="mt-3 flex items-center justify-center gap-2">
                 {onSwitchToPaxg && (
                   <button
                     type="button"
                     onClick={onSwitchToPaxg}
-                    className="rounded bg-[#e6e9ef] px-2.5 py-1 text-[11px] font-medium text-[#0b0d11] hover:bg-white"
+                    className="rounded bg-[#2962FF] px-2.5 py-1 text-[11px] font-medium text-white hover:bg-[#3a70ff]"
                   >
-                    Use PAXG Real Tape
+                    Switch to PAXG Real Tape
                   </button>
                 )}
                 {onOpenCsvModal && (
                   <button
                     type="button"
                     onClick={onOpenCsvModal}
-                    className="rounded border border-[#2d3546] bg-[#151922] px-2.5 py-1 text-[11px] text-[#e6e9ef] hover:bg-[#1e2431]"
+                    className="rounded border border-[#434651] bg-[#1A2333] px-2.5 py-1 text-[11px] text-[#F1F1F1]"
                   >
                     Import Databento CSV
                   </button>
@@ -548,14 +667,14 @@ export function FootprintChart({
                   Math.max(
                     0,
                     Math.min(
-                      Math.max(0, bars.length - 4),
+                      Math.max(0, bars.length - 3),
                       prev + (e.deltaY > 0 ? 1 : -1)
                     )
                   )
                 );
               } else {
                 setVisibleCount((prev) =>
-                  Math.max(4, Math.min(18, prev + (e.deltaY > 0 ? 1 : -1)))
+                  Math.max(4, Math.min(16, prev + (e.deltaY > 0 ? 1 : -1)))
                 );
               }
             }}

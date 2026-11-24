@@ -38,39 +38,19 @@ export function TapePanel({
 }: TapePanelProps) {
   const activeLarge = customLarge ?? largeThreshold;
   const activeWhale = customWhale ?? whaleThreshold;
-  const recentTicks = ticks.slice(-24).reverse();
-
-  const buyPct =
-    latestFootprint && latestFootprint.totalVol > 0
-      ? (latestFootprint.buyVol / latestFootprint.totalVol) * 100
-      : 50;
+  const recentTicks = ticks.slice(-80).reverse();
 
   return (
-    <div className="flex flex-col border-t border-[#1c212b] bg-[#0b0d11] text-[11px]">
-      <div className="flex h-7 items-center justify-between gap-2 border-b border-[#1c212b] bg-[#0f1217] px-2.5">
-        <div className="flex items-center gap-3">
-          <span className="font-medium text-[#e6e9ef]">Time &amp; Sales Tape</span>
-          {latestFootprint && (
-            <span className="font-mono-num text-[10px] text-[#7d8594]">
-              {latestFootprint.tradeCount} prints · ΔStr{" "}
-              <strong
-                className={
-                  latestFootprint.deltaStrengthPct >= 0
-                    ? "text-[#00c087]"
-                    : "text-[#f6465d]"
-                }
-              >
-                {latestFootprint.deltaStrengthPct > 0 ? "+" : ""}
-                {latestFootprint.deltaStrengthPct}%
-              </strong>
-            </span>
-          )}
-        </div>
+    <div className="flex flex-col h-full bg-[#151B26] text-[11px] overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2A2E39] bg-[#1A2333] px-2.5 py-1.5">
+        <span className="font-semibold text-[#F1F1F1]">
+          Smart Tape · BigTrades Calibration
+        </span>
 
         {hasRealAggressorTape && (
-          <div className="flex items-center gap-2 font-mono-num text-[10px] text-[#8b94a5]">
+          <div className="flex items-center gap-2 font-mono-num text-[10px] text-[#ABAEB8]">
             <label className="flex items-center gap-1">
-              <span>Large≥</span>
+              <span className="text-[#0073FF]">Large≥</span>
               <input
                 type="number"
                 step="0.05"
@@ -80,11 +60,11 @@ export function TapePanel({
                   const n = Number(e.target.value);
                   onChangeCustomLarge(n > 0 ? n : null);
                 }}
-                className="w-12 rounded bg-[#151922] px-1 py-0.5 text-[10px] text-[#e6e9ef] border border-[#222836]"
+                className="w-12 rounded-xs bg-[#111620] px-1 py-0.5 text-[#F1F1F1] border border-[#2A2E39]"
               />
             </label>
             <label className="flex items-center gap-1">
-              <span className="text-[#d4a03a]">Whale≥</span>
+              <span className="text-[#3BEFF0]">Whale≥</span>
               <input
                 type="number"
                 step="0.1"
@@ -94,7 +74,7 @@ export function TapePanel({
                   const n = Number(e.target.value);
                   onChangeCustomWhale(n > 0 ? n : null);
                 }}
-                className="w-12 rounded bg-[#151922] px-1 py-0.5 text-[10px] text-[#eab854] border border-[#222836]"
+                className="w-12 rounded-xs bg-[#111620] px-1 py-0.5 text-[#3BEFF0] border border-[#2A2E39]"
               />
             </label>
             {(customLarge !== null || customWhale !== null) && (
@@ -104,7 +84,7 @@ export function TapePanel({
                   onChangeCustomLarge(null);
                   onChangeCustomWhale(null);
                 }}
-                className="text-[10px] text-[#c8cfdc] underline"
+                className="text-[#3BEFF0] underline"
               >
                 Auto
               </button>
@@ -114,80 +94,63 @@ export function TapePanel({
       </div>
 
       {!hasRealAggressorTape ? (
-        <div className="px-3 py-3 text-[11px] text-[#586070]">
-          Time &amp; Sales disabled on OHLCV feed.
+        <div className="flex flex-1 items-center justify-center text-[#ABAEB8]">
+          Smart Tape requires real tick feed (PAXG Tape or Databento CSV).
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-12">
-          <div className="border-b border-[#1c212b] p-2.5 lg:col-span-4 lg:border-b-0 lg:border-r">
-            {latestFootprint && (
-              <div className="space-y-2">
-                <div className="flex justify-between font-mono-num text-[10px]">
-                  <span className="text-[#f6465d]">
-                    Bid {latestFootprint.sellVol.toFixed(2)}
-                  </span>
-                  <span className="text-[#7d8594]">
-                    POC ${latestFootprint.pocPrice.toFixed(2)}
-                  </span>
-                  <span className="text-[#00c087]">
-                    Ask {latestFootprint.buyVol.toFixed(2)}
-                  </span>
-                </div>
-                <div className="flex h-1.5 overflow-hidden rounded-full bg-[#171c26]">
-                  <div className="bg-[#f6465d]" style={{ width: `${100 - buyPct}%` }} />
-                  <div className="bg-[#00c087]" style={{ width: `${buyPct}%` }} />
-                </div>
-                <div className="flex flex-wrap gap-1.5 font-mono-num text-[10px] text-[#8b94a5]">
-                  <span>
-                    Imb: <strong className="text-[#00c087]">{latestFootprint.stackedBuyImbalances}B</strong>/
-                    <strong className="text-[#f6465d]">{latestFootprint.stackedSellImbalances}S</strong>
-                  </span>
-                  {latestFootprint.absorptionLow && <span className="text-[#d4a03a]">· ABS↓</span>}
-                  {latestFootprint.absorptionHigh && <span className="text-[#d4a03a]">· ABS↑</span>}
-                  {latestFootprint.aggressionFlipBull && <span className="text-[#00c087]">· FLIP↑</span>}
-                  {latestFootprint.aggressionFlipBear && <span className="text-[#f6465d]">· FLIP↓</span>}
-                </div>
-              </div>
-            )}
+        <div className="flex-1 overflow-y-auto px-2.5 py-1.5 font-mono-num text-[10.5px]">
+          {latestFootprint && (
+            <div className="mb-2 flex items-center justify-between rounded-xs bg-[#1A2333] px-2.5 py-1.5 border border-[#2A2E39]">
+              <span className="text-[#F2385A]">Bid {latestFootprint.sellVol.toFixed(2)}</span>
+              <span className="text-[#FF4900] font-semibold">POC ${latestFootprint.pocPrice.toFixed(2)}</span>
+              <span className="text-[#089981]">Ask {latestFootprint.buyVol.toFixed(2)}</span>
+              <span className="text-[#F1F1F1]">ΔStr {latestFootprint.deltaStrengthPct > 0 ? "+" : ""}{latestFootprint.deltaStrengthPct}%</span>
+            </div>
+          )}
+          <div className="grid grid-cols-4 border-b border-[#2A2E39] pb-1 text-[10px] text-[#ABAEB8]">
+            <span>Time (PT)</span>
+            <span>Price</span>
+            <span className="text-right">Volume</span>
+            <span className="text-right">Side</span>
           </div>
-
-          <div className="max-h-28 overflow-y-auto px-2.5 py-1.5 lg:col-span-8">
-            <div className="divide-y divide-[#131720] font-mono-num text-[10px]">
-              {recentTicks.map((t, i) => {
-                const isWhale = t.size >= activeWhale;
-                const isLarge = t.size >= activeLarge;
-                return (
-                  <div
-                    key={`${t.ts}-${i}`}
-                    className={`grid grid-cols-4 gap-2 py-0.5 ${
-                      isWhale ? "bg-[#1c1912] font-semibold" : isLarge ? "bg-[#12161f]" : ""
+          <div className="divide-y divide-[#1E2534]">
+            {recentTicks.map((t, i) => {
+              const isWhale = t.size >= activeWhale;
+              const isLarge = t.size >= activeLarge;
+              return (
+                <div
+                  key={`${t.ts}-${i}`}
+                  className={`grid grid-cols-4 py-0.5 px-1 ${
+                    isWhale
+                      ? t.side === "buy"
+                        ? "bg-[#3BEFF0]/20 font-bold"
+                        : "bg-[#D900FC]/25 font-bold"
+                      : isLarge
+                        ? t.side === "buy"
+                          ? "bg-[#0073FF]/20 font-semibold"
+                          : "bg-[#F2385A]/20 font-semibold"
+                        : ""
+                  }`}
+                >
+                  <span className="text-[#ABAEB8]">{fmtTimeSec(t.ts)}</span>
+                  <span className="text-[#F1F1F1]">{t.price.toFixed(2)}</span>
+                  <span className="text-right text-[#F1F1F1]">
+                    {t.size.toFixed(t.size >= 10 ? 1 : 3)}
+                  </span>
+                  <span
+                    className={`text-right ${
+                      t.side === "buy"
+                        ? "text-[#089981]"
+                        : t.side === "sell"
+                          ? "text-[#F2385A]"
+                          : "text-[#ABAEB8]"
                     }`}
                   >
-                    <span className="text-[#586070]">{fmtTimeSec(t.ts)}</span>
-                    <span className="text-[#e6e9ef]">{t.price.toFixed(2)}</span>
-                    <span
-                      className={`text-right ${
-                        isWhale ? "text-[#eab854]" : isLarge ? "text-[#e6e9ef]" : "text-[#8b94a5]"
-                      }`}
-                    >
-                      {t.size.toFixed(t.size >= 10 ? 1 : 3)}
-                      {isWhale ? " ★" : ""}
-                    </span>
-                    <span
-                      className={`text-right ${
-                        t.side === "buy"
-                          ? "text-[#00c087]"
-                          : t.side === "sell"
-                            ? "text-[#f6465d]"
-                            : "text-[#586070]"
-                      }`}
-                    >
-                      {t.side === "buy" ? "ASK (BUY)" : t.side === "sell" ? "BID (SELL)" : "-"}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+                    {t.side === "buy" ? "ASK (BUY)" : t.side === "sell" ? "BID (SELL)" : "-"}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { L2Snapshot, Tick } from "@/lib/types";
 import { formatPTTime } from "@/lib/goldMath";
+import { ATAS_ASIA_THEME as T } from "@/lib/atasTheme";
 
 interface HeatmapChartProps {
   l2Snapshots: L2Snapshot[];
@@ -11,15 +12,36 @@ interface HeatmapChartProps {
   heightClass?: string;
 }
 
+/**
+ * Exact ATAS X Heatmap (G1.W0 from Asia_Template_Fixed.aws):
+ * - SelectedPalette: "darkToRed" (obsidian -> deep red -> bright crimson -> hot orange/yellow)
+ * - BestPriceLineBidColor: White | BestPriceLineAskColor: Cyan (#3BEFF0)
+ * - BubbleBuyColor: White | BubbleSellColor: Cyan (#3BEFF0), log-scaled bubbles
+ * Renders ONLY real Databento mbp-10 CSV snapshots or Live Kraken PAXG/USD L2 depth.
+ */
+function darkToRedColor(norm: number): string {
+  const n = Math.max(0, Math.min(1, norm));
+  if (n < 0.35) {
+    const t = n / 0.35;
+    return `rgba(${Math.round(40 + 110 * t)}, ${Math.round(8 * t)}, ${Math.round(14 * t)}, ${(0.22 + t * 0.45).toFixed(2)})`;
+  }
+  if (n < 0.72) {
+    const t = (n - 0.35) / 0.37;
+    return `rgba(${Math.round(150 + 105 * t)}, ${Math.round(10 + 55 * t)}, ${Math.round(14 * (1 - t))}, ${(0.67 + t * 0.23).toFixed(2)})`;
+  }
+  const t = (n - 0.72) / 0.28;
+  return `rgba(255, ${Math.round(65 + 175 * t)}, ${Math.round(45 * t)}, ${(0.9 + t * 0.1).toFixed(2)})`;
+}
+
 export function HeatmapChart({
   l2Snapshots,
   ticks,
   onOpenCsvModal,
-  heightClass = "h-[220px]",
+  heightClass = "h-full min-h-[320px]",
 }: HeatmapChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [dims, setDims] = useState({ width: 560, height: 220 });
+  const [dims, setDims] = useState({ width: 560, height: 360 });
   const [liveRecording, setLiveRecording] = useState(false);
   const [liveSnapshots, setLiveSnapshots] = useState<L2Snapshot[]>([]);
   const [liveError, setLiveError] = useState<string | null>(null);
@@ -78,19 +100,25 @@ export function HeatmapChart({
     canvas.height = dims.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    ctx.fillStyle = "#0b0d11";
-    ctx.fillRect(0, 0, dims.width, dims.height);
-
     const padL = 8;
-    const padR = 60;
-    const padT = 8;
-    const padB = 18;
-    const plotW = Math.max(80, dims.width - padL - padR - 44);
-    const domX = padL + plotW + 4;
-    const domW = 40;
-    const plotH = Math.max(60, dims.height - padT - padB);
+    const padR = 64;
+    const domW = 50;
+    const padT = 10;
+    const padB = 20;
+    const axisX = dims.width - padR;
+    const domX = axisX - domW;
+    const plotW = Math.max(80, domX - padL - 4);
+    const timeY = dims.height - padB;
+    const plotH = Math.max(60, timeY - padT);
 
-    const slice = activeSnapshots.slice(-100);
+    // Pure ATAS darkToRed obsidian canvas
+    ctx.fillStyle = "#05060A";
+    ctx.fillRect(0, 0, axisX, timeY);
+    ctx.fillStyle = T.chrome.panelBg;
+    ctx.fillRect(axisX, 0, padR, dims.height);
+    ctx.fillRect(0, timeY, dims.width, padB);
+
+    const slice = activeSnapshots.slice(-110);
     let minP = Infinity;
     let maxP = -Infinity;
     let maxSize = 0;
@@ -112,30 +140,22 @@ export function HeatmapChart({
     const priceToY = (p: number) => padT + ((maxP - p) / span) * plotH;
     const colW = Math.max(2, plotW / Math.max(1, slice.length));
 
+    // ATAS darkToRed liquidity heat bands
     slice.forEach((snap, idx) => {
       const x = padL + idx * colW;
       for (const b of snap.bids) {
-        const y = priceToY(b.price);
-        const norm = Math.min(1, b.size / maxSize);
-        const r = Math.round(norm > 0.65 ? 212 * norm : 12);
-        const g = Math.round(75 + 150 * norm);
-        const bl = Math.round(norm > 0.7 ? 58 : 170);
-        ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, ${(0.16 + norm * 0.78).toFixed(2)})`;
-        ctx.fillRect(x, y - 2, colW + 0.5, 4);
+        ctx.fillStyle = darkToRedColor(b.size / maxSize);
+        ctx.fillRect(x, priceToY(b.price) - 2, colW + 0.6, 4);
       }
       for (const a of snap.asks) {
-        const y = priceToY(a.price);
-        const norm = Math.min(1, a.size / maxSize);
-        const r = Math.round(135 + 115 * norm);
-        const g = Math.round(norm > 0.55 ? 140 * norm : 40);
-        const bl = Math.round(norm > 0.55 ? 40 : 120);
-        ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, ${(0.16 + norm * 0.78).toFixed(2)})`;
-        ctx.fillRect(x, y - 2, colW + 0.5, 4);
+        ctx.fillStyle = darkToRedColor(a.size / maxSize);
+        ctx.fillRect(x, priceToY(a.price) - 2, colW + 0.6, 4);
       }
     });
 
-    ctx.strokeStyle = "#00c087";
-    ctx.lineWidth = 1.1;
+    // ATAS Best Bid Line (White) & Best Ask Line (Cyan #3BEFF0)
+    ctx.strokeStyle = T.heatmap.bestBidLine;
+    ctx.lineWidth = 1.4;
     ctx.beginPath();
     slice.forEach((s, idx) => {
       const bb = s.bids[0]?.price;
@@ -147,8 +167,8 @@ export function HeatmapChart({
     });
     ctx.stroke();
 
-    ctx.strokeStyle = "#f6465d";
-    ctx.lineWidth = 1.1;
+    ctx.strokeStyle = T.heatmap.bestAskLine;
+    ctx.lineWidth = 1.4;
     ctx.beginPath();
     slice.forEach((s, idx) => {
       const ba = s.asks[0]?.price;
@@ -160,6 +180,7 @@ export function HeatmapChart({
     });
     ctx.stroke();
 
+    // ATAS Log-Scaled White (Buy) & Cyan (Sell) Trade Bubbles
     const startTs = slice[0].ts;
     const endTs = slice[slice.length - 1].ts;
     if (!usingLive && ticks.length > 0 && endTs > startTs) {
@@ -169,57 +190,60 @@ export function HeatmapChart({
         const frac = (t.ts - startTs) / Math.max(1, endTs - startTs);
         const cx = padL + frac * plotW;
         const cy = priceToY(t.price);
-        if (cy < padT || cy > padT + plotH) continue;
-        const rad = 2 + Math.min(7, (t.size / maxTickSz) * 7);
+        if (cy < padT || cy > timeY) continue;
+        const rad = 2.5 + Math.log1p((t.size / maxTickSz) * 15) * 4;
+        ctx.save();
+        ctx.globalAlpha = 0.75;
         ctx.beginPath();
-        ctx.arc(cx, cy, rad, 0, Math.PI * 2);
-        ctx.fillStyle =
-          t.side === "buy" ? "rgba(0, 192, 135, 0.55)" : "rgba(246, 70, 93, 0.55)";
+        ctx.arc(cx, cy, Math.min(18, rad), 0, Math.PI * 2);
+        ctx.fillStyle = t.side === "buy" ? T.heatmap.bubbleBuy : T.heatmap.bubbleSell;
         ctx.fill();
+        ctx.restore();
       }
     }
 
+    // Current DOM resting ladder column
     const latest = slice[slice.length - 1];
-    ctx.fillStyle = "#0f1217";
-    ctx.fillRect(domX, padT, domW, plotH);
+    ctx.fillStyle = T.smartDom.bg;
+    ctx.fillRect(domX, 0, domW, timeY);
     for (const b of latest.bids) {
       const y = priceToY(b.price);
-      const w = Math.max(2, (b.size / maxSize) * (domW - 2));
-      ctx.fillStyle = "rgba(0, 192, 135, 0.65)";
-      ctx.fillRect(domX, y - 2, w, 4);
+      const w = Math.max(2, (b.size / maxSize) * (domW - 4));
+      ctx.fillStyle = T.smartDom.bidBar;
+      ctx.fillRect(domX + 2, y - 2, w, 4);
     }
     for (const a of latest.asks) {
       const y = priceToY(a.price);
-      const w = Math.max(2, (a.size / maxSize) * (domW - 2));
-      ctx.fillStyle = "rgba(246, 70, 93, 0.65)";
-      ctx.fillRect(domX, y - 2, w, 4);
+      const w = Math.max(2, (a.size / maxSize) * (domW - 4));
+      ctx.fillStyle = T.smartDom.askBar;
+      ctx.fillRect(domX + 2, y - 2, w, 4);
     }
 
-    ctx.font = "9px ui-monospace, monospace";
-    ctx.fillStyle = "#626b7c";
+    // Axis ticks
+    ctx.font = "10px 'Segoe UI', monospace";
+    ctx.fillStyle = T.chrome.textSecondary;
     ctx.textAlign = "left";
-    for (let i = 0; i <= 5; i++) {
-      const p = maxP - (i / 5) * span;
-      ctx.fillText(p.toFixed(2), dims.width - padR + 5, priceToY(p) + 3);
+    for (let i = 0; i <= 6; i++) {
+      const p = maxP - (i / 6) * span;
+      ctx.fillText(p.toFixed(2), axisX + 5, priceToY(p) + 3);
     }
-    ctx.fillStyle = "#586070";
-    ctx.fillText(formatPTTime(slice[0].ts), padL, dims.height - 4);
-    ctx.fillText(formatPTTime(slice[slice.length - 1].ts), padL + plotW - 32, dims.height - 4);
+    ctx.fillText(formatPTTime(slice[0].ts), padL, dims.height - 5);
+    ctx.fillText(formatPTTime(slice[slice.length - 1].ts), domX - 38, dims.height - 5);
   }, [dims, activeSnapshots, ticks, usingLive]);
 
   return (
-    <div className="flex flex-col bg-[#0b0d11] border-t border-[#1c212b] overflow-hidden">
-      <div className="flex h-7 items-center justify-between gap-2 border-b border-[#1c212b] bg-[#0f1217] px-2.5 text-[11px]">
+    <div className="flex flex-col h-full bg-[#05060A] overflow-hidden">
+      <div className="flex h-7 shrink-0 items-center justify-between gap-2 border-b border-[#2A2E39] bg-[#151B26] px-2.5 text-[11px]">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-[#e6e9ef]">L2 Orderbook Heatmap &amp; DOM</span>
+          <span className="font-medium text-[#F1F1F1]">Heatmap (darkToRed · White/Cyan)</span>
           {usingLive && (
-            <span className="font-mono-num text-[10px] text-[#00c087]">
+            <span className="font-mono-num text-[10px] text-[#3BEFF0]">
               LIVE KRAKEN PAXG L2 ({liveSnapshots.length})
             </span>
           )}
           {l2Snapshots.length > 0 && (
-            <span className="font-mono-num text-[10px] text-[#d4a03a]">
-              REAL MBP-10 ({l2Snapshots.length})
+            <span className="font-mono-num text-[10px] text-[#089981]">
+              MBP-10 ({l2Snapshots.length})
             </span>
           )}
         </div>
@@ -228,10 +252,10 @@ export function HeatmapChart({
             <button
               type="button"
               onClick={() => setLiveRecording((v) => !v)}
-              className={`rounded px-2 py-0.5 transition ${
+              className={`rounded-xs px-2 py-0.5 ${
                 liveRecording
-                  ? "bg-[#f6465d]/20 text-[#f6465d]"
-                  : "bg-[#171c26] text-[#c8cfdc] hover:bg-[#222938]"
+                  ? "bg-[#F2385A] text-white"
+                  : "bg-[#1A2333] text-[#F1F1F1] border border-[#2A2E39] hover:bg-[#243147]"
               }`}
             >
               {liveRecording ? "Stop Live L2" : "Record Live Kraken L2"}
@@ -240,22 +264,26 @@ export function HeatmapChart({
           <button
             type="button"
             onClick={onOpenCsvModal}
-            className="rounded bg-[#171c26] px-2 py-0.5 text-[#c8cfdc] hover:bg-[#222938]"
+            className="rounded-xs bg-[#1A2333] px-2 py-0.5 text-[#F1F1F1] border border-[#2A2E39] hover:bg-[#243147]"
           >
             Upload MBP-10 CSV
           </button>
         </div>
       </div>
 
-      <div ref={containerRef} className={`relative w-full ${heightClass}`}>
+      <div ref={containerRef} className={`relative flex-1 w-full ${heightClass}`}>
         {activeSnapshots.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-4 text-center text-[11px] text-[#7d8594]">
-            <div className="max-w-md">
-              No L2 depth loaded (model priority #5; optional). Upload a Databento{" "}
-              <code className="text-[#c8cfdc]">mbp-10</code> CSV or click{" "}
-              <span className="text-[#e6e9ef] font-medium">Record Live Kraken L2</span>{" "}
-              to stream real gold orderbook depth.
-              {liveError && <div className="mt-1 text-[#f6465d]">{liveError}</div>}
+          <div className="flex h-full items-center justify-center p-6 text-center text-[11px] text-[#ABAEB8]">
+            <div className="max-w-sm rounded border border-[#2A2E39] bg-[#151B26] p-4">
+              <div className="font-semibold text-[#F1F1F1]">
+                ATAS Heatmap · darkToRed Palette
+              </div>
+              <p className="mt-1.5 leading-relaxed text-[#ABAEB8]">
+                No Level 2 depth loaded (same as ATAS delayed feed). Upload a Databento{" "}
+                <code className="text-[#3BEFF0]">mbp-10</code> CSV for historical GC depth or click{" "}
+                <strong className="text-white">Record Live Kraken L2</strong> above.
+              </p>
+              {liveError && <div className="mt-1.5 text-[#F2385A]">{liveError}</div>}
             </div>
           </div>
         ) : (

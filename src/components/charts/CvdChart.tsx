@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { FootprintBar } from "@/lib/types";
 import { formatPTTime } from "@/lib/goldMath";
+import { ATAS_ASIA_THEME as T } from "@/lib/atasTheme";
 
 interface CvdChartProps {
   bars: FootprintBar[];
@@ -10,14 +11,21 @@ interface CvdChartProps {
   heightClass?: string;
 }
 
+/**
+ * Exact ATAS CumulativeDelta Sub-Panel from Asia_Template_Fixed.aws:
+ *   Mode: "candles"
+ *   PosColor: Green (#009900)
+ *   NegColor: rgb(255, 58, 58) (#FF3A3A)
+ *   Separator: #434651
+ */
 export function CvdChart({
   bars,
   hasRealAggressorTape,
-  heightClass = "h-full min-h-[150px]",
+  heightClass = "h-[145px]",
 }: CvdChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [dims, setDims] = useState({ width: 560, height: 160 });
+  const [dims, setDims] = useState({ width: 560, height: 145 });
 
   useEffect(() => {
     const el = containerRef.current;
@@ -32,7 +40,7 @@ export function CvdChart({
     return () => obs.disconnect();
   }, []);
 
-  const slice = bars.slice(-60);
+  const slice = bars.slice(-65);
 
   useEffect(() => {
     if (!hasRealAggressorTape) return;
@@ -46,137 +54,145 @@ export function CvdChart({
     canvas.height = dims.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    ctx.fillStyle = "#0b0d11";
-    ctx.fillRect(0, 0, dims.width, dims.height);
-
-    if (slice.length === 0) return;
-
-    const padL = 10;
-    const padR = 56;
-    const padT = 10;
-    const padB = 20;
+    const padL = 8;
+    const padR = 66;
+    const padT = 16;
+    const padB = 18;
     const axisX = dims.width - padR;
-    const plotW = Math.max(80, dims.width - padL - padR);
-    const plotH = Math.max(40, dims.height - padT - padB);
+    const timeY = dims.height - padB;
+    const plotW = Math.max(80, axisX - padL - 24);
+    const plotH = Math.max(40, timeY - padT);
 
-    ctx.strokeStyle = "#171b24";
+    // ATAS dark navy-black continuation background
+    ctx.fillStyle = "#00000A";
+    ctx.fillRect(0, 0, axisX, timeY);
+    ctx.fillStyle = T.chrome.panelBg;
+    ctx.fillRect(axisX, 0, padR, dims.height);
+    ctx.fillRect(0, timeY, dims.width, padB);
+
+    ctx.strokeStyle = T.chrome.border;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(axisX + 0.5, 0);
-    ctx.lineTo(axisX + 0.5, dims.height - padB);
-    ctx.moveTo(0, dims.height - padB + 0.5);
-    ctx.lineTo(dims.width, dims.height - padB + 0.5);
+    ctx.lineTo(axisX + 0.5, dims.height);
+    ctx.moveTo(0, timeY + 0.5);
+    ctx.lineTo(dims.width, timeY + 0.5);
     ctx.stroke();
 
-    const cvds = slice.map((b) => b.cumDelta);
-    const minC = Math.min(0, ...cvds);
-    const maxC = Math.max(0, ...cvds);
+    if (slice.length === 0) return;
+
+    // Build CVD OHLC candles per bar (open = prev cumDelta, high = open + maxDelta, low = open + minDelta, close = cumDelta)
+    const cvdCandles = slice.map((b) => {
+      const open = b.cumDelta - b.delta;
+      const close = b.cumDelta;
+      const high = Math.max(open, close, open + b.maxDelta);
+      const low = Math.min(open, close, open + b.minDelta);
+      return { ts: b.ts, open, high, low, close, bullDiv: b.cvdDivergenceBull, bearDiv: b.cvdDivergenceBear };
+    });
+
+    let minC = Infinity;
+    let maxC = -Infinity;
+    for (const c of cvdCandles) {
+      if (c.low < minC) minC = c.low;
+      if (c.high > maxC) maxC = c.high;
+    }
+    const pad = Math.max(0.5, (maxC - minC) * 0.14);
+    minC -= pad;
+    maxC += pad;
     const span = Math.max(0.1, maxC - minC);
-    const cvdToY = (v: number) => padT + ((maxC - v) / span) * plotH;
+    const yOf = (v: number) => padT + ((maxC - v) / span) * plotH;
 
-    // Zero line
-    const y0 = Math.round(cvdToY(0)) + 0.5;
-    ctx.strokeStyle = "#1f2533";
-    ctx.setLineDash([2, 4]);
-    ctx.beginPath();
-    ctx.moveTo(padL, y0);
-    ctx.lineTo(axisX, y0);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    // Zero line if inside range
+    if (minC < 0 && maxC > 0) {
+      const y0 = Math.round(yOf(0)) + 0.5;
+      ctx.strokeStyle = "#2A2E39";
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(padL, y0);
+      ctx.lineTo(axisX, y0);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
-    const stepX = plotW / Math.max(1, slice.length);
-    const maxAbsDelta = Math.max(...slice.map((b) => Math.abs(b.delta)), 0.01);
+    // Draw ATAS CumulativeDelta Candles (Green #009900 / Red #FF3A3A)
+    const stepX = plotW / Math.max(1, cvdCandles.length);
+    const cw = Math.max(2, Math.min(11, stepX * 0.66));
 
-    for (let i = 0; i < slice.length; i++) {
-      const b = slice[i];
-      const cx = padL + i * stepX + stepX / 2;
-      const bw = Math.max(2, stepX * 0.52);
-      const bh = (Math.abs(b.delta) / maxAbsDelta) * (plotH * 0.34);
-      ctx.fillStyle =
-        b.delta >= 0 ? "rgba(0, 192, 135, 0.25)" : "rgba(246, 70, 93, 0.25)";
-      if (b.delta >= 0) {
-        ctx.fillRect(cx - bw / 2, y0 - bh, bw, bh);
-      } else {
-        ctx.fillRect(cx - bw / 2, y0, bw, bh);
+    for (let i = 0; i < cvdCandles.length; i++) {
+      const c = cvdCandles[i];
+      const cx = padLeftX(padL, i, stepX);
+      const isUp = c.close >= c.open;
+      const col = isUp ? T.indicators.cvdPos : T.indicators.cvdNeg;
+
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(cx) + 0.5, yOf(c.high));
+      ctx.lineTo(Math.round(cx) + 0.5, yOf(c.low));
+      ctx.stroke();
+
+      const yO = yOf(c.open);
+      const yC = yOf(c.close);
+      ctx.fillStyle = col;
+      ctx.fillRect(cx - cw / 2, Math.min(yO, yC), cw, Math.max(1.5, Math.abs(yC - yO)));
+
+      if (c.bullDiv || c.bearDiv) {
+        ctx.beginPath();
+        ctx.arc(cx, c.bullDiv ? yOf(c.low) + 4 : yOf(c.high) - 4, 3, 0, Math.PI * 2);
+        ctx.fillStyle = "#FFFF00";
+        ctx.fill();
       }
     }
 
-    // Crisp ivory CVD curve
-    ctx.strokeStyle = "#d0d7e3";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    slice.forEach((b, i) => {
-      const x = padL + i * stepX + stepX / 2;
-      const y = cvdToY(b.cumDelta);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-
-    // Divergence dots
-    slice.forEach((b, i) => {
-      if (!b.cvdDivergenceBull && !b.cvdDivergenceBear) return;
-      const x = padL + i * stepX + stepX / 2;
-      const y = cvdToY(b.cumDelta);
-      ctx.beginPath();
-      ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = b.cvdDivergenceBull ? "#00c087" : "#f6465d";
-      ctx.fill();
-    });
-
-    // Latest CVD badge
+    // Top-left ATAS panel label
     const last = slice[slice.length - 1];
-    const ly = cvdToY(last.cumDelta);
-    ctx.fillStyle = last.cumDelta >= 0 ? "#00a876" : "#dc354d";
-    ctx.fillRect(axisX + 1, ly - 7, padR - 3, 14);
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "600 9.5px ui-monospace, monospace";
+    ctx.font = "10px 'Segoe UI', monospace";
+    ctx.fillStyle = T.chrome.textSecondary;
     ctx.textAlign = "left";
+    ctx.fillText(
+      `Cumulative Delta (Candles)   Δ ${last.delta > 0 ? "+" : ""}${last.delta.toFixed(2)}   CVD ${last.cumDelta > 0 ? "+" : ""}${last.cumDelta.toFixed(2)}`,
+      10,
+      12
+    );
+
+    // Axis current CVD pill
+    const ly = yOf(last.cumDelta);
+    ctx.fillStyle = last.delta >= 0 ? T.indicators.cvdPos : T.indicators.cvdNeg;
+    ctx.fillRect(axisX + 1, ly - 7, padR - 2, 14);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "600 9.5px 'Segoe UI', monospace";
     ctx.fillText(
       (last.cumDelta > 0 ? "+" : "") + last.cumDelta.toFixed(1),
       axisX + 5,
       ly + 3
     );
 
-    ctx.fillStyle = "#586070";
-    ctx.font = "9px ui-monospace, monospace";
-    const every = Math.max(1, Math.floor(slice.length / 6));
+    // Time labels
+    ctx.fillStyle = T.chrome.textSecondary;
+    ctx.font = "9px 'Segoe UI', monospace";
+    const every = Math.max(1, Math.floor(slice.length / 7));
     for (let i = 0; i < slice.length; i += every) {
-      const x = padL + i * stepX + stepX / 2;
+      const x = padLeftX(padL, i, stepX);
       ctx.fillText(formatPTTime(slice[i].ts), x - 14, dims.height - 5);
     }
   }, [dims, slice, hasRealAggressorTape]);
 
-  const latest = slice[slice.length - 1];
-
   return (
-    <div className="flex flex-col bg-[#0b0d11] overflow-hidden h-full">
-      <div className="flex h-7 shrink-0 items-center justify-between border-b border-[#1c212b] bg-[#0f1217] px-2.5 text-[11px]">
-        <span className="font-medium text-[#e6e9ef]">CVD &amp; Bar Delta</span>
-        {hasRealAggressorTape && latest ? (
-          <div className="flex items-center gap-3 font-mono-num text-[10px]">
-            <span className={latest.delta >= 0 ? "text-[#00c087]" : "text-[#f6465d]"}>
-              Δ {latest.delta > 0 ? "+" : ""}
-              {latest.delta.toFixed(2)}
-            </span>
-            <span className="text-[#d0d7e3]">
-              CVD {latest.cumDelta > 0 ? "+" : ""}
-              {latest.cumDelta.toFixed(2)}
-            </span>
-          </div>
-        ) : (
-          <span className="text-[10px] text-[#586070]">OHLCV only</span>
-        )}
-      </div>
-      <div ref={containerRef} className={`relative flex-1 w-full ${heightClass}`}>
-        {!hasRealAggressorTape ? (
-          <div className="flex h-full items-center justify-center text-[11px] text-[#586070]">
-            CVD disabled on OHLCV-only feed.
-          </div>
-        ) : (
-          <canvas ref={canvasRef} className="block h-full w-full" />
-        )}
-      </div>
+    <div
+      ref={containerRef}
+      className={`relative w-full border-t border-[#434651] bg-[#00000A] overflow-hidden ${heightClass}`}
+    >
+      {!hasRealAggressorTape ? (
+        <div className="flex h-full items-center justify-center text-[11px] text-[#787D8C]">
+          Cumulative Delta (Candles) disabled on OHLCV-only feed
+        </div>
+      ) : (
+        <canvas ref={canvasRef} className="block h-full w-full" />
+      )}
     </div>
   );
+}
+
+function padLeftX(padL: number, i: number, stepX: number) {
+  return padL + i * stepX + stepX / 2;
 }
